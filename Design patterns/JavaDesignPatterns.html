@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<div class="content" id="content">
+
+Design Patterns in Java
+
+Design patterns are reusable solutions to commonly occurring problems in software design. They're grouped into **3 categories**:
+
+---
+
+## 🏗️ 1. CREATIONAL PATTERNS
+> *How objects are created*
+
+---
+
+### 1.1 Singleton
+Ensures only **one instance** of a class exists.
+
+```java
+public class DatabaseConnection {
+    private static volatile DatabaseConnection instance;
+
+    private DatabaseConnection() {}
+
+    public static DatabaseConnection getInstance() {
+        if (instance == null) {
+            synchronized (DatabaseConnection.class) {
+                if (instance == null) {
+                    instance = new DatabaseConnection();
+                }
+            }
+        }
+        return instance;
+    }
+}
+```
+
+**Use when:** DB connection pool, Logger, Config manager.
+
+---
+
+### 1.2 Factory Method
+Lets subclasses decide **which class to instantiate**.
+
+```java
+interface Shape { void draw(); }
+
+class Circle implements Shape { public void draw() { System.out.println("Circle"); } }
+class Square implements Shape { public void draw() { System.out.println("Square"); } }
+
+class ShapeFactory {
+    public static Shape getShape(String type) {
+        return switch (type) {
+            case "CIRCLE" -> new Circle();
+            case "SQUARE" -> new Square();
+            default -> throw new IllegalArgumentException("Unknown shape");
+        };
+    }
+}
+```
+**Use when:** You don't know ahead of time which class you need to instantiate.
+
+---
+
+### 1.3 Abstract Factory
+Factory of factories — creates **families of related objects**.
+
+```java
+interface Button { void render(); }
+interface Checkbox { void render(); }
+
+class WindowsButton implements Button { public void render() { System.out.println("Windows Button"); } }
+class MacButton implements Button { public void render() { System.out.println("Mac Button"); } }
+
+interface GUIFactory {
+    Button createButton();
+    Checkbox createCheckbox();
+}
+
+class WindowsFactory implements GUIFactory {
+    public Button createButton() { return new WindowsButton(); }
+    public Checkbox createCheckbox() { return new WindowsCheckbox(); }
+}
+```
+**Use when:** Your system needs to be independent of how its products are created (cross-platform UI, theming).
+
+---
+
+### 1.4 Builder
+Constructs **complex objects step by step**.
+
+```java
+class Pizza {
+    private String size, crust, topping;
+
+    private Pizza(Builder b) {
+        this.size = b.size;
+        this.crust = b.crust;
+        this.topping = b.topping;
+    }
+
+    public static class Builder {
+        private String size, crust, topping;
+
+        public Builder size(String s) { this.size = s; return this; }
+        public Builder crust(String c) { this.crust = c; return this; }
+        public Builder topping(String t) { this.topping = t; return this; }
+        public Pizza build() { return new Pizza(this); }
+    }
+}
+
+// Usage
+Pizza pizza = new Pizza.Builder().size("Large").crust("Thin").topping("Cheese").build();
+```
+**Use when:** Object has many optional parameters (avoids telescoping constructors). Lombok's `@Builder` does this automatically.
+
+---
+
+### 1.5 Prototype
+Creates new objects by **cloning** an existing object.
+
+```java
+class Employee implements Cloneable {
+    String name;
+    String dept;
+
+    public Employee clone() throws CloneNotSupportedException {
+        return (Employee) super.clone();
+    }
+}
+```
+**Use when:** Object creation is expensive; you want a copy with slight modifications.
+
+---
+
+## 🔧 2. STRUCTURAL PATTERNS
+> *How objects are composed/structured*
+
+---
+
+### 2.1 Adapter
+Makes **incompatible interfaces** work together.
+
+```java
+// Existing class (adaptee)
+class OldLogger { public void logMessage(String msg) { System.out.println(msg); } }
+
+// Target interface
+interface NewLogger { void log(String level, String msg); }
+
+// Adapter
+class LoggerAdapter implements NewLogger {
+    private OldLogger oldLogger;
+    public LoggerAdapter(OldLogger ol) { this.oldLogger = ol; }
+
+    public void log(String level, String msg) {
+        oldLogger.logMessage("[" + level + "] " + msg);
+    }
+}
+```
+**Use when:** Integrating legacy code or third-party libraries with a different interface.
+
+---
+
+### 2.2 Decorator
+Adds **behavior to objects dynamically** without changing their class.
+
+```java
+interface Coffee { String getDescription(); double getCost(); }
+
+class SimpleCoffee implements Coffee {
+    public String getDescription() { return "Coffee"; }
+    public double getCost() { return 50.0; }
+}
+
+class MilkDecorator implements Coffee {
+    private Coffee coffee;
+    public MilkDecorator(Coffee c) { this.coffee = c; }
+    public String getDescription() { return coffee.getDescription() + ", Milk"; }
+    public double getCost() { return coffee.getCost() + 10.0; }
+}
+
+// Usage
+Coffee c = new MilkDecorator(new SimpleCoffee()); // Coffee + Milk = 60
+```
+**Use when:** You want to add features without subclassing (Java I/O streams use this heavily).
+
+---
+
+### 2.3 Proxy
+Provides a **surrogate/placeholder** to control access to an object.
+
+```java
+interface Image { void display(); }
+
+class RealImage implements Image {
+    public RealImage(String file) { System.out.println("Loading: " + file); }
+    public void display() { System.out.println("Displaying image"); }
+}
+
+class ProxyImage implements Image {
+    private RealImage realImage;
+    private String file;
+    public ProxyImage(String f) { this.file = f; }
+    public void display() {
+        if (realImage == null) realImage = new RealImage(file); // lazy load
+        realImage.display();
+    }
+}
+```
+**Use when:** Lazy loading, access control, logging, caching. Spring AOP uses Proxy heavily.
+
+---
+
+### 2.4 Facade
+Provides a **simplified interface** to a complex subsystem.
+
+```java
+class CPU { public void start() { System.out.println("CPU started"); } }
+class Memory { public void load() { System.out.println("Memory loaded"); } }
+class HardDrive { public void read() { System.out.println("HardDrive reading"); } }
+
+// Facade
+class ComputerFacade {
+    private CPU cpu = new CPU();
+    private Memory memory = new Memory();
+    private HardDrive hd = new HardDrive();
+
+    public void startComputer() {
+        cpu.start();
+        memory.load();
+        hd.read();
+    }
+}
+```
+**Use when:** You want to hide complexity of subsystems. Spring's `JdbcTemplate` is a classic facade.
+
+---
+
+### 2.5 Composite
+Treats **individual objects and compositions uniformly** (tree structures).
+
+```java
+interface FileSystem { void show(String indent); }
+
+class File implements FileSystem {
+    String name;
+    public void show(String indent) { System.out.println(indent + name); }
+}
+
+class Directory implements FileSystem {
+    String name;
+    List<FileSystem> children = new ArrayList<>();
+    public void add(FileSystem f) { children.add(f); }
+    public void show(String indent) {
+        System.out.println(indent + name);
+        for (FileSystem f : children) f.show(indent + "  ");
+    }
+}
+```
+**Use when:** Tree structures — file systems, org charts, UI component hierarchies.
+
+---
+
+### 2.6 Bridge
+**Decouples abstraction from implementation** so they can vary independently.
+
+```java
+interface Renderer { void render(String shape); }
+class VectorRenderer implements Renderer { public void render(String s) { System.out.println("Vector: " + s); } }
+class RasterRenderer implements Renderer { public void render(String s) { System.out.println("Raster: " + s); } }
+
+abstract class Shape {
+    protected Renderer renderer;
+    public Shape(Renderer r) { this.renderer = r; }
+    abstract void draw();
+}
+
+class Circle extends Shape {
+    public Circle(Renderer r) { super(r); }
+    public void draw() { renderer.render("Circle"); }
+}
+```
+**Use when:** You want to avoid a class explosion from combining two dimensions (e.g., shape × renderer).
+
+---
+
+### 2.7 Flyweight
+Shares **common state** among many fine-grained objects to save memory.
+
+```java
+class TreeType { // shared (intrinsic state)
+    String name, color;
+}
+
+class Tree { // per-instance (extrinsic state)
+    int x, y;
+    TreeType type; // shared reference
+}
+```
+**Use when:** You have thousands of similar objects (game particles, characters in a text editor).
+
+---
+
+## 🎭 3. BEHAVIORAL PATTERNS
+> *How objects communicate and assign responsibility*
+
+---
+
+### 3.1 Strategy
+Defines a **family of algorithms** and makes them interchangeable.
+
+```java
+interface SortStrategy { void sort(int[] arr); }
+class BubbleSort implements SortStrategy { public void sort(int[] arr) { /* bubble sort */ } }
+class QuickSort implements SortStrategy { public void sort(int[] arr) { /* quick sort */ } }
+
+class Sorter {
+    private SortStrategy strategy;
+    public Sorter(SortStrategy s) { this.strategy = s; }
+    public void sort(int[] arr) { strategy.sort(arr); }
+}
+```
+**Use when:** You want to switch algorithms at runtime. Payment gateways, compression, validation.
+
+---
+
+### 3.2 Observer
+Defines a **one-to-many dependency** — when one object changes, all dependents are notified.
+
+```java
+interface Observer { void update(String event); }
+
+class EventManager {
+    List<Observer> listeners = new ArrayList<>();
+    public void subscribe(Observer o) { listeners.add(o); }
+    public void notify(String event) { listeners.forEach(o -> o.update(event)); }
+}
+
+class EmailAlert implements Observer {
+    public void update(String event) { System.out.println("Email sent for: " + event); }
+}
+```
+**Use when:** Event systems, MVC (Model notifies View), Kafka consumers, Spring `ApplicationEvent`.
+
+---
+
+### 3.3 Command
+Encapsulates a **request as an object** — supports undo, queue, logging.
+
+```java
+interface Command { void execute(); void undo(); }
+
+class LightOnCommand implements Command {
+    Light light;
+    public LightOnCommand(Light l) { this.light = l; }
+    public void execute() { light.on(); }
+    public void undo() { light.off(); }
+}
+
+class RemoteControl {
+    Command command;
+    public void setCommand(Command c) { this.command = c; }
+    public void pressButton() { command.execute(); }
+}
+```
+**Use when:** Undo/redo functionality, task queues, transactional operations.
+
+---
+
+### 3.4 Template Method
+Defines the **skeleton of an algorithm** in a base class; subclasses fill in the steps.
+
+```java
+abstract class DataProcessor {
+    // Template method
+    public final void process() {
+        readData();
+        processData();
+        writeData();
+    }
+
+    abstract void readData();
+    abstract void processData();
+    void writeData() { System.out.println("Writing data..."); } // default
+}
+
+class CSVProcessor extends DataProcessor {
+    void readData() { System.out.println("Reading CSV"); }
+    void processData() { System.out.println("Processing CSV"); }
+}
+```
+**Use when:** Multiple classes share the same algorithm skeleton but differ in steps. Spring's `JdbcTemplate`, `RestTemplate`.
+
+---
+
+### 3.5 Chain of Responsibility
+Passes a **request along a chain** of handlers until one handles it.
+
+```java
+abstract class AuthHandler {
+    protected AuthHandler next;
+    public AuthHandler setNext(AuthHandler h) { this.next = h; return h; }
+    public abstract void handle(Request request);
+}
+
+class TokenValidator extends AuthHandler {
+    public void handle(Request request) {
+        if (!request.hasToken()) System.out.println("No token!");
+        else if (next != null) next.handle(request);
+    }
+}
+```
+**Use when:** Spring Security filter chains, middleware pipelines, logging levels.
+
+---
+
+### 3.6 State
+Allows an object to **change its behavior when its state changes**.
+
+```java
+interface State { void handle(TrafficLight light); }
+
+class GreenState implements State {
+    public void handle(TrafficLight light) {
+        System.out.println("Green → Switch to Yellow");
+        light.setState(new YellowState());
+    }
+}
+```
+**Use when:** Order lifecycle (PLACED → SHIPPED → DELIVERED), vending machines, workflow engines.
+
+---
+
+### 3.7 Iterator
+Provides a way to **sequentially access elements** without exposing the underlying structure.
+
+```java
+// Java's Iterable/Iterator is the built-in implementation of this pattern
+List<String> list = List.of("a", "b", "c");
+Iterator<String> it = list.iterator();
+while (it.hasNext()) System.out.println(it.next());
+```
+**Use when:** Custom collections, tree traversal. Java's `for-each` loop relies on this pattern.
+
+---
+
+### 3.8 Mediator
+Defines an object that **encapsulates how objects interact** — reduces direct dependencies.
+
+```java
+interface ChatMediator { void sendMessage(String msg, User sender); }
+
+class ChatRoom implements ChatMediator {
+    List<User> users = new ArrayList<>();
+    public void addUser(User u) { users.add(u); }
+    public void sendMessage(String msg, User sender) {
+        users.stream()
+             .filter(u -> u != sender)
+             .forEach(u -> u.receive(msg));
+    }
+}
+```
+**Use when:** Chat rooms, air traffic control, UI component coordination.
+
+---
+
+### 3.9 Memento
+Captures and **restores an object's state** without exposing its internals (undo).
+
+```java
+class Editor {
+    private String content;
+    public Memento save() { return new Memento(content); }
+    public void restore(Memento m) { this.content = m.getContent(); }
+
+    static class Memento {
+        private final String content;
+        Memento(String c) { this.content = c; }
+        String getContent() { return content; }
+    }
+}
+```
+**Use when:** Undo history (text editors, games), snapshot-based rollback.
+
+---
+
+### 3.10 Visitor
+Lets you **add new operations** to existing objects without modifying their classes.
+
+```java
+interface Visitor { void visit(Circle c); void visit(Rectangle r); }
+
+class AreaCalculator implements Visitor {
+    public void visit(Circle c) { System.out.println("Circle area: " + Math.PI * c.radius * c.radius); }
+    public void visit(Rectangle r) { System.out.println("Rect area: " + r.width * r.height); }
+}
+
+interface Shape { void accept(Visitor v); }
+class Circle implements Shape {
+    double radius;
+    public void accept(Visitor v) { v.visit(this); }
+}
+```
+**Use when:** Adding operations to a class hierarchy without changing it (compilers, AST processing).
+
+---
+
+### 3.11 Interpreter
+Defines a **grammar and an interpreter** for a language.
+
+```java
+interface Expression { boolean interpret(String context); }
+
+class TerminalExpression implements Expression {
+    private String data;
+    public TerminalExpression(String d) { this.data = d; }
+    public boolean interpret(String context) { return context.contains(data); }
+}
+```
+**Use when:** SQL parsers, regex engines, expression evaluators. Rarely built from scratch.
+
+---
+
+## 📊 Quick Reference
+
+| Category | Pattern | One-liner |
+|---|---|---|
+| Creational | Singleton | One instance only |
+| Creational | Factory | Delegate instantiation |
+| Creational | Abstract Factory | Family of factories |
+| Creational | Builder | Step-by-step construction |
+| Creational | Prototype | Clone existing objects |
+| Structural | Adapter | Bridge incompatible interfaces |
+| Structural | Decorator | Add behavior dynamically |
+| Structural | Proxy | Controlled access |
+| Structural | Facade | Simplified interface |
+| Structural | Composite | Tree structures |
+| Structural | Bridge | Decouple abstraction & impl |
+| Structural | Flyweight | Share common state |
+| Behavioral | Strategy | Swappable algorithms |
+| Behavioral | Observer | Event notifications |
+| Behavioral | Command | Request as object |
+| Behavioral | Template Method | Algorithm skeleton |
+| Behavioral | Chain of Responsibility | Pass request down chain |
+| Behavioral | State | Behavior by state |
+| Behavioral | Iterator | Sequential access |
+| Behavioral | Mediator | Centralized communication |
+| Behavioral | Memento | Save & restore state |
+| Behavioral | Visitor | Add ops without modifying |
+| Behavioral | Interpreter | Language grammar |
+
+---
+
+## 🎯 Interview Tip
+
+Interviewers love asking: *"Which patterns does Spring Boot use internally?"*
+
+- **Singleton** → Spring beans (default scope)
+- **Proxy** → Spring AOP, `@Transactional`, `@Cacheable`
+- **Factory** → `BeanFactory`, `ApplicationContext`
+- **Template Method** → `JdbcTemplate`, `RestTemplate`, `KafkaTemplate`
+- **Observer** → `ApplicationEvent` / `@EventListener`
+- **Decorator** → Spring Security filter chain
+- **Chain of Responsibility** → Servlet filters, Spring Security
+
+</div>
+
+<br>
+<a href="../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+    mermaid.initialize({ startOnLoad: true });
+</script>
+
+<script>
+const contentDiv = document.getElementById("content");
+
+// 1. Get RAW markdown exactly as-is
+const rawMarkdown = contentDiv.textContent;
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code AFTER rendering
+Prism.highlightAll();
+
+// 4. Render diagrams AFTER HTML conversion
+mermaid.initialize({ startOnLoad: true });
+</script>
+<script>
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = "<h2>Contents</h2><ul>";
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += "</ul>";
+toc.innerHTML = tocHTML;
+</script>
+</body>
+</html>

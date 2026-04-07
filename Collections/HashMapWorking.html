@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<div class="content" id="content">
+
+# How HashMap Works Internally - Theory
+
+Let me explain the theory without code examples.
+
+---
+
+## 1. What is HashMap?
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    HASHMAP CONCEPT                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  HashMap is a data structure that stores key-value pairs    │
+│  using a technique called HASHING                           │
+│                                                             │
+│  Key Features:                                              │
+│  • Fast lookup: O(1) average time                           │
+│  • Stores pairs: (Key → Value)                              │
+│  • Keys must be unique                                      │
+│  • Values can be duplicate                                  │
+│  • Allows one null key and multiple null values             │
+│  • Not synchronized (not thread-safe)                       │
+│  • Maintains no order                                       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Core Components
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              HASHMAP INTERNAL COMPONENTS                    │
+└─────────────────────────────────────────────────────────────┘
+
+Component 1: BUCKET ARRAY
+─────────────────────────
+┌──────────────────────────────────────────┐
+│  An array that stores entries            │
+│  Each position is called a "bucket"      │
+│  Default size: 16                        │
+│                                          │
+│  [0] [1] [2] [3] ... [15]                │
+│                                          │
+│  Each bucket can hold:                   │
+│  - null (empty)                          │
+│  - One entry                             │
+│  - Multiple entries (linked list/tree)   │
+└──────────────────────────────────────────┘
+
+Component 2: NODE (Entry)
+─────────────────────────
+┌──────────────────────────────────────────┐
+│  Each entry is stored as a Node          │
+│                                          │
+│  Node contains:                          │
+│  • hash      - Cached hash code          │
+│  • key       - The key object            │
+│  • value     - The value object          │
+│  • next      - Reference to next node    │
+│              (for handling collisions)   │
+└──────────────────────────────────────────┘
+
+Component 3: HASH FUNCTION
+──────────────────────────
+┌──────────────────────────────────────────┐
+│  Converts key into bucket index          │
+│                                          │
+│  Process:                                │
+│  1. Get key's hashCode                   │
+│  2. Apply HashMap's hash function        │
+│  3. Calculate bucket index               │
+│                                          │
+│  Purpose: Distribute keys evenly         │
+└──────────────────────────────────────────┘
+
+Component 4: LOAD FACTOR
+────────────────────────
+┌──────────────────────────────────────────┐
+│  Measures how full the HashMap can get   │
+│  before resizing                         │
+│                                          │
+│  Default value: 0.75 (75%)               │
+│                                          │
+│  Formula:                                │
+│  Threshold = Capacity × Load Factor      │
+│                                          │
+│  When size > threshold → Resize!         │
+└──────────────────────────────────────────┘
+```
+
+---
+
+## 3. How PUT Operation Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  PUT OPERATION THEORY                       │
+└─────────────────────────────────────────────────────────────┘
+
+                    User calls put(key, value)
+                             │
+                             ▼
+        ┌────────────────────────────────────────┐
+        │  STEP 1: Calculate Hash Code           │
+        │  ─────────────────────────             │
+        │  • Call key.hashCode() method          │
+        │  • Returns an integer                  │
+        │  • This number is the "hash"           │
+        └────────────────────────────────────────┘
+                             │
+                             ▼
+        ┌────────────────────────────────────────┐
+        │  STEP 2: Calculate Bucket Index        │
+        │  ──────────────────────────            │
+        │  • Use formula: (n-1) & hash           │
+        │  • Where n = array capacity            │
+        │  • Result = index (0 to n-1)           │
+        │  • This determines which bucket        │
+        └────────────────────────────────────────┘
+                             │
+                             ▼
+        ┌────────────────────────────────────────┐
+        │  STEP 3: Check Bucket Status           │
+        │  ───────────────────────               │
+        │  Go to bucket[index]                   │
+        └────────────────────────────────────────┘
+                             │
+                ┌────────────┴────────────┐
+                │                         │
+           Bucket Empty?            Bucket Has Nodes?
+                │                         │
+                ▼                         ▼
+    ┌──────────────────────┐   ┌──────────────────────┐
+    │ CASE A: Empty Bucket │   │ CASE B: Collision    │
+    │ ──────────────────── │   │ ──────────────────── │
+    │                      │   │                      │
+    │ • Create new Node    │   │ • Traverse nodes     │
+    │ • Store in bucket    │   │ • Check each key     │
+    │ • Increment size     │   │   using equals()     │
+    │ • Done!              │   │                      │
+    └──────────────────────┘   └──────────────────────┘
+                                          │
+                             ┌────────────┴────────────┐
+                             │                         │
+                      Key Exists?                 Key New?
+                             │                         │
+                             ▼                         ▼
+                 ┌──────────────────┐      ┌──────────────────┐
+                 │ Replace Value    │      │ Add New Node     │
+                 │ Return old value │      │ to end of chain  │
+                 └──────────────────┘      └──────────────────┘
+                                                      │
+                                                      ▼
+                                          ┌──────────────────┐
+                                          │ Increment size   │
+                                          └──────────────────┘
+                                                      │
+                                                      ▼
+                                          ┌──────────────────┐
+                                          │ Check if resize  │
+                                          │ needed           │
+                                          └──────────────────┘
+```
+
+---
+
+## 4. How GET Operation Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  GET OPERATION THEORY                       │
+└─────────────────────────────────────────────────────────────┘
+
+                    User calls get(key)
+                             │
+                             ▼
+        ┌────────────────────────────────────────┐
+        │  STEP 1: Calculate Hash Code           │
+        │  ─────────────────────────             │
+        │  • Call key.hashCode()                 │
+        │  • Get the hash value                  │
+        └────────────────────────────────────────┘
+                             │
+                             ▼
+        ┌────────────────────────────────────────┐
+        │  STEP 2: Calculate Bucket Index        │
+        │  ──────────────────────────            │
+        │  • Formula: (n-1) & hash               │
+        │  • Find which bucket to check          │
+        └────────────────────────────────────────┘
+                             │
+                             ▼
+        ┌────────────────────────────────────────┐
+        │  STEP 3: Go to Bucket                  │
+        │  ────────────────────                  │
+        │  • Access bucket[index]                │
+        └────────────────────────────────────────┘
+                             │
+                ┌────────────┴────────────┐
+                │                         │
+           Bucket Empty?            Bucket Has Nodes?
+                │                         │
+                ▼                         ▼
+        ┌──────────────┐         ┌──────────────────┐
+        │ Return null  │         │ STEP 4: Search   │
+        │ (Not found)  │         │ ──────────────── │
+        └──────────────┘         │                  │
+                                 │ Traverse nodes   │
+                                 │ in bucket        │
+                                 └──────────────────┘
+                                          │
+                                          ▼
+                         ┌────────────────────────────┐
+                         │ Compare each node's key    │
+                         │ using key.equals()         │
+                         └────────────────────────────┘
+                                          │
+                             ┌────────────┴────────────┐
+                             │                         │
+                       Key Found?                  Key Not Found?
+                             │                         │
+                             ▼                         ▼
+                   ┌──────────────────┐      ┌──────────────┐
+                   │ Return node.value│      │ Return null  │
+                   └──────────────────┘      └──────────────┘
+```
+
+---
+
+## 5. Collision Handling Theory
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  COLLISION CONCEPT                          │
+└─────────────────────────────────────────────────────────────┘
+
+What is a Collision?
+────────────────────
+When two different keys map to the same bucket index
+
+Why do Collisions Happen?
+──────────────────────────
+• Limited number of buckets (e.g., 16)
+• Unlimited number of possible keys
+• Hash function produces same index for different keys
+
+Example:
+────────
+Key1: "apple"  → hash: 93029210 → index: 10
+Key2: "banana" → hash: 93029375 → index: 10
+                                   ↑
+                            COLLISION!
+Both keys want bucket[10]
+
+How HashMap Handles Collisions:
+────────────────────────────────
+
+METHOD 1: CHAINING (Linked List)
+─────────────────────────────────
+┌──────────────────────────────────────────┐
+│  Bucket[10]:                             │
+│                                          │
+│  [Node1: apple] → [Node2: banana] → null │
+│                                          │
+│  • Store multiple entries in same bucket │
+│  • Form a linked list                    │
+│  • Search through list using equals()    │
+│  • Time: O(n) where n = list length      │
+└──────────────────────────────────────────┘
+
+METHOD 2: TREEIFICATION (Red-Black Tree)
+─────────────────────────────────────────
+┌──────────────────────────────────────────┐
+│  When linked list grows too long (≥8):   │
+│                                          │
+│  Convert to Red-Black Tree               │
+│                                          │
+│      Bucket[10]:                         │
+│           [Root]                         │
+│          /      \                        │
+│      [Left]    [Right]                   │
+│                                          │
+│  • Better performance for long chains    │
+│  • Search time: O(log n)                 │
+│  • Only in Java 8+                       │
+│  • Reverts to list when size drops to ≤6 │
+└──────────────────────────────────────────┘
+```
+
+---
+
+## 6. Resizing (Rehashing) Theory
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  RESIZING CONCEPT                           │
+└─────────────────────────────────────────────────────────────┘
+
+Why Resize?
+───────────
+• Too many entries in HashMap
+• Buckets become crowded
+• Performance degrades
+• Need more space
+
+When to Resize?
+───────────────
+Condition: size > threshold
+
+Where: threshold = capacity × loadFactor
+
+Example:
+• capacity = 16
+• loadFactor = 0.75
+• threshold = 16 × 0.75 = 12
+
+When 13th entry is added → RESIZE!
+
+How Resizing Works:
+───────────────────
+
+STEP 1: Create New Array
+─────────────────────────
+• Double the capacity
+• Old capacity: 16
+• New capacity: 32
+
+STEP 2: Rehash All Entries
+───────────────────────────
+• Take each entry from old array
+• Recalculate bucket index (using new capacity)
+• Place in new array
+
+STEP 3: Update Reference
+─────────────────────────
+• Replace old array with new array
+• Update threshold for next resize
+
+Visual Flow:
+────────────
+
+OLD Array (capacity = 16):
+┌─────────────────────────┐
+│ [0] → Entry1            │
+│ [1] → Entry2 → Entry3   │
+│ [2] → null              │
+│ ...                     │
+│ [15]→ Entry4            │
+│                         │
+│ Size: 13 (> threshold)  │
+└─────────────────────────┘
+            │
+            ▼ RESIZE (double capacity)
+            │
+NEW Array (capacity = 32):
+┌─────────────────────────┐
+│ [0] → null              │
+│ [1] → Entry3            │
+│ [5] → Entry1            │
+│ [7] → Entry2            │
+│ ...                     │
+│ [20]→ Entry4            │
+│                         │
+│ Threshold: 32 × 0.75=24 │
+└─────────────────────────┘
+
+Why Rehashing Needed?
+─────────────────────
+• Index depends on capacity
+• Formula: index = (capacity-1) & hash
+• Capacity changed → index changes
+• Must recalculate for all entries
+
+Performance Impact:
+───────────────────
+• Resizing is expensive: O(n)
+• Happens rarely (when threshold crossed)
+• Amortized time: Still O(1) average
+```
+
+---
+
+## 7. Hash Code and Equals Contract
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              HASH CODE & EQUALS THEORY                      │
+└─────────────────────────────────────────────────────────────┘
+
+Why Both Methods Are Critical:
+───────────────────────────────
+
+hashCode() Purpose:
+───────────────────
+┌────────────────────────────────────┐
+│ • Determines WHICH bucket          │
+│ • Must be fast                     │
+│ • Returns integer                  │
+│ • Used FIRST in lookup             │
+└────────────────────────────────────┘
+
+equals() Purpose:
+─────────────────
+┌────────────────────────────────────┐
+│ • Determines IF keys are same      │
+│ • Checks actual content            │
+│ • Returns boolean                  │
+│ • Used AFTER finding bucket        │
+└────────────────────────────────────┘
+
+The Contract (Rules):
+─────────────────────
+
+RULE 1: Consistent Hash Codes
+──────────────────────────────
+If a.equals(b) is TRUE
+Then a.hashCode() MUST equal b.hashCode()
+
+Example:
+Person p1 = new Person("John", 25)
+Person p2 = new Person("John", 25)
+
+If p1.equals(p2) → TRUE
+Then p1.hashCode() MUST equal p2.hashCode()
+
+RULE 2: Reverse Not Required
+─────────────────────────────
+If a.hashCode() equals b.hashCode()
+Then a.equals(b) can be TRUE or FALSE
+
+This is called: HASH COLLISION (allowed)
+
+RULE 3: Consistency
+───────────────────
+Multiple calls to hashCode() on same object
+MUST return same value (if object unchanged)
+
+Why This Matters in HashMap:
+─────────────────────────────
+
+Lookup Process:
+───────────────
+1. Calculate hashCode() → Find bucket
+2. Go to bucket
+3. Use equals() → Find exact entry
+
+If hashCode() wrong:
+• Goes to wrong bucket
+• Can't find entry
+• Returns null (wrong!)
+
+If equals() wrong:
+• Right bucket
+• But can't identify correct entry
+• May store duplicates (wrong!)
+
+Example Problem:
+────────────────
+
+Scenario: Only hashCode() overridden
+─────────────────────────────────────
+Person p1 = new Person("John", 25)
+Person p2 = new Person("John", 25)
+
+p1.hashCode() == p2.hashCode() ✓ (same bucket)
+p1.equals(p2) → FALSE ✗ (default equals)
+
+Result:
+• Both in same bucket
+• But treated as different keys
+• DUPLICATES stored!
+
+Scenario: Only equals() overridden
+──────────────────────────────────
+Person p1 = new Person("John", 25)
+Person p2 = new Person("John", 25)
+
+p1.hashCode() != p2.hashCode() ✗ (different buckets)
+p1.equals(p2) → TRUE ✓
+
+Result:
+• Go to different buckets
+• equals() never called
+• Can't find entry
+• DUPLICATES stored!
+```
+
+---
+
+## 8. Performance Characteristics
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  PERFORMANCE THEORY                         │
+└─────────────────────────────────────────────────────────────┘
+
+Time Complexity Analysis:
+─────────────────────────
+
+BEST CASE: O(1)
+───────────────
+Conditions:
+• Good hash function
+• No collisions
+• Direct bucket access
+
+Process:
+1. Hash calculation: O(1)
+2. Bucket access: O(1)
+3. Total: O(1)
+
+AVERAGE CASE: O(1)
+──────────────────
+Conditions:
+• Reasonably distributed keys
+• Few collisions
+• Short chains
+
+Process:
+1. Hash calculation: O(1)
+2. Bucket access: O(1)
+3. Short list traversal: ~O(1)
+4. Total: O(1) amortized
+
+WORST CASE: O(n) or O(log n)
+─────────────────────────────
+Conditions:
+• Poor hash function
+• All keys in one bucket
+• Long chain
+
+Before Java 8 (Linked List):
+• All entries in one bucket
+• Must traverse entire list
+• Time: O(n)
+
+After Java 8 (Red-Black Tree):
+• Converts to tree when list ≥ 8
+• Binary search in tree
+• Time: O(log n)
+
+Space Complexity:
+─────────────────
+• Storage: O(n)
+  Where n = number of entries
+
+• Memory overhead:
+  - Array structure
+  - Node objects
+  - Extra references
+  - Approximately 3-4× key-value size
+
+Load Factor Impact:
+───────────────────
+
+Low Load Factor (e.g., 0.5):
+────────────────────────────
+• More empty buckets
+• Fewer collisions
+• Faster operations
+• MORE memory used
+• More frequent resizing
+
+High Load Factor (e.g., 0.9):
+──────────────────────────────
+• Fewer empty buckets
+• More collisions
+• Slower operations
+• LESS memory used
+• Less frequent resizing
+
+Balanced (0.75 - Default):
+──────────────────────────
+• Good trade-off
+• Reasonable collisions
+• Acceptable performance
+• Moderate memory usage
+```
+
+---
+
+## 9. Important Properties
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  KEY PROPERTIES                             │
+└─────────────────────────────────────────────────────────────┘
+
+Property 1: NOT SYNCHRONIZED
+────────────────────────────
+┌────────────────────────────────────┐
+│ • Not thread-safe                  │
+│ • Multiple threads can corrupt data│
+│ • Use ConcurrentHashMap for threads│
+│ • Or wrap: Collections.synchronize │
+└────────────────────────────────────┘
+
+Property 2: ALLOWS NULL
+───────────────────────
+┌────────────────────────────────────┐
+│ • One null key allowed             │
+│ • Multiple null values allowed     │
+│ • null key stored at bucket[0]     │
+└────────────────────────────────────┘
+
+Property 3: NO ORDERING
+───────────────────────
+┌────────────────────────────────────┐
+│ • Iteration order unpredictable    │
+│ • Depends on hash values           │
+│ • Changes after resize             │
+│ • Use LinkedHashMap for order      │
+└────────────────────────────────────┘
+
+Property 4: CAPACITY POWERS OF 2
+────────────────────────────────
+┌────────────────────────────────────┐
+│ • Capacity always 2^n              │
+│ • 16, 32, 64, 128...               │
+│ • Optimizes index calculation      │
+│ • Uses bitwise AND instead of MOD  │
+└────────────────────────────────────┘
+
+Property 5: FAIL-FAST ITERATORS
+────────────────────────────────
+┌────────────────────────────────────┐
+│ • Throws ConcurrentModification    │
+│ • If modified during iteration     │
+│ • Except via iterator.remove()     │
+│ • Uses modCount internally         │
+└────────────────────────────────────┘
+```
+
+---
+
+## 10. Summary
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  HASHMAP THEORY SUMMARY                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  STRUCTURE:                                                 │
+│  • Array of buckets (default 16)                            │
+│  • Each bucket holds linked list or tree                    │
+│  • Nodes contain: hash, key, value, next                    │
+│                                                             │
+│  HASHING:                                                   │
+│  • Uses key.hashCode() to find bucket                       │
+│  • Formula: index = (capacity-1) & hash                     │
+│  • Distributes keys across buckets                          │
+│                                                             │
+│  COLLISIONS:                                                │
+│  • Multiple keys in same bucket                             │
+│  • Stored as linked list (default)                          │
+│  • Converts to tree when list ≥ 8 (Java 8+)                 │
+│                                                             │
+│  RESIZING:                                                  │
+│  • Triggers when size > capacity × loadFactor               │
+│  • Doubles capacity                                         │
+│  • Rehashes all entries                                     │
+│  • Default loadFactor = 0.75                                │
+│                                                             │
+│  KEY METHODS:                                               │
+│  • hashCode() - Finds bucket                                │
+│  • equals() - Identifies exact entry                        │
+│  • BOTH must be overridden correctly                        │
+│                                                             │
+│  PERFORMANCE:                                               │
+│  • Average: O(1) for get/put                                │
+│  • Worst: O(n) linked list, O(log n) tree                   │
+│  • Space: O(n)                                              │
+│                                                             │
+│  KEY FEATURES:                                              │
+│  • Not synchronized                                         │
+│  • Allows one null key                                      │
+│  • No ordering guaranteed                                   │
+│  • Fail-fast iterators                                      │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+This is the complete theory of how HashMap works internally! 🎯
+</div>
+
+<br>
+<a href="../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+    mermaid.initialize({ startOnLoad: true });
+</script>
+
+<script>
+const contentDiv = document.getElementById("content");
+
+// 1. Get RAW markdown exactly as-is
+const rawMarkdown = contentDiv.textContent;
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code AFTER rendering
+Prism.highlightAll();
+
+// 4. Render diagrams AFTER HTML conversion
+mermaid.initialize({ startOnLoad: true });
+</script>
+<script>
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = "<h2>Contents</h2><ul>";
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += "</ul>";
+toc.innerHTML = tocHTML;
+</script>
+</body>
+</html>
