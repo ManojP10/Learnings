@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+### 1. API Gateway
+
+**What it is:** Single entry point for all client requests. Routes to right microservice, handles auth, rate limiting, SSL termination, and response aggregation.
+
+**Advantages:**
+- Clients don't need to know individual service locations
+- Central place for auth, logging, rate limiting
+- Can aggregate multiple service responses into one
+
+**Interview scenario:** *"Your mobile and web clients call 10 different services — how do you manage this?"* → API Gateway is the answer. Also asked as *"How do you handle cross-cutting concerns like auth in microservices?"*
+
+```
++------------+        +---------------------------+        +------------------+
+| Web Client |------->|                           |------->|  User Service    |
++------------+        |       API GATEWAY         |        +------------------+
+                      |                           |
++------------+        |  - Authentication         |        +------------------+
+| Mobile App |------->|  - Rate Limiting          |------->|  Order Service   |
++------------+        |  - SSL Termination        |        +------------------+
+                      |  - Request Routing        |
++------------+        |  - Load Balancing         |        +------------------+
+| 3rd Party  |------->|                           |------->|  Product Service |
++------------+        +---------------------------+        +------------------+
+```
+
+**Simple code (Spring Cloud Gateway):**
+```java
+// application.yml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: user-service
+          uri: lb://USER-SERVICE
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - AuthFilter   // custom global filter
+
+        - id: order-service
+          uri: lb://ORDER-SERVICE
+          predicates:
+            - Path=/api/orders/**
+```
+
+```java
+@Component
+public class AuthFilter implements GlobalFilter {
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        String token = exchange.getRequest().getHeaders().getFirst("Authorization");
+        if (token == null || !isValid(token)) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+        return chain.filter(exchange);
+    }
+}
+```
+
+---
+
+### 2. Service Discovery
+
+**What it is:** Services register themselves to a registry (like Eureka). Other services look up the registry to find where to call instead of hardcoding IPs.
+
+**Two types:**
+- **Client-side** — the caller queries registry and calls directly (Eureka + Ribbon)
+- **Server-side** — load balancer queries registry and forwards (AWS ALB)
+
+**Interview scenario:** *"In a dynamic cloud environment where service IPs change constantly, how do services find each other?"*
+
+```
+  +----------------+     (1) Register on startup
+  | Order Service  |-----------------------------+
+  +----------------+                             |
+                                                 v
+  +----------------+     (2) Register on startup  +------------------+
+  | User Service   |---------------------------->|  SERVICE REGISTRY |
+  +----------------+                             |  (Eureka Server)  |
+                                                 |                   |
+  +----------------+     (3) "Where is User       |  order-service    |
+  | Order Service  |         Service?"            |   -> 10.0.0.5:8081|
+  |  (as client)   |<----------------------------|  user-service     |
+  +----------------+     (4) "10.0.0.4:8080"     |   -> 10.0.0.4:8080|
+        |                                         +------------------+
+        | (5) Call directly
+        v
+  +----------------+
+  | User Service   |
+  | 10.0.0.4:8080  |
+  +----------------+
+```
+
+**Simple code:**
+```java
+// Eureka Server
+@SpringBootApplication
+@EnableEurekaServer
+public class RegistryApp { public static void main(String[] args) { SpringApplication.run(RegistryApp.class, args); } }
+
+// Each microservice (Eureka Client)
+@SpringBootApplication
+@EnableEurekaClient
+public class UserServiceApp { ... }
+
+// Calling another service using Feign (service name, not IP)
+@FeignClient(name = "ORDER-SERVICE")
+public interface OrderClient {
+    @GetMapping("/api/orders/{userId}")
+    List<Order> getOrdersByUser(@PathVariable String userId);
+}
+```
+
+---
+
+### 3. Circuit Breaker
+
+**What it is:** Wraps a remote call. If failures cross a threshold, it "opens" the circuit and stops calling the failing service. Returns a fallback instead. After a timeout, it tries again (half-open state).
+
+**Three states:**
+- **Closed** — everything working, calls pass through
+- **Open** — too many failures, calls blocked, fallback returned
+- **Half-Open** — test call allowed to see if service recovered
+
+**Advantages:**
+- Prevents cascading failures across services
+- Gives failing service time to recover
+- Fast failure instead of waiting for timeout
+
+**Interview scenario:** *"Payment service is down — how do you prevent the entire order system from failing?"* → Circuit Breaker.
+
+```
+CLOSED state (normal):
+  Order Service ---call---> Payment Service
+                <--response--
+
+  [failure count < threshold] -> stays CLOSED
+
+OPEN state (Payment Service down):
+  Order Service --->  [CIRCUIT BREAKER] ---> Payment Service (BLOCKED)
+                            |
+                            +---> fallback() -> "Payment queued, try later"
+
+  [after timeout window] -> moves to HALF-OPEN
+
+HALF-OPEN state (testing recovery):
+  Order Service ---> [1 test call] ---> Payment Service
+       |
+       +-- success? -> CLOSE circuit
+       +-- fail?    -> OPEN again
+
+
+  State machine:
+  
+  [CLOSED] ---(failures > threshold)---> [OPEN]
+     ^                                      |
+     |                              (wait timeout)
+     |                                      v
+     +-------(test call success)----[HALF-OPEN]
+```
+
+**Simple code (Resilience4j):**
+```java
+@Service
+public class OrderService {
+
+    @CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+    public String processPayment(Order order) {
+        return paymentClient.pay(order); // remote call
+    }
+
+    // Called automatically when circuit is OPEN
+    public String paymentFallback(Order order, Exception ex) {
+        return "Payment queued. We'll process it shortly.";
+    }
+}
+```
+
+```yaml
+# application.yml
+resilience4j:
+  circuitbreaker:
+    instances:
+      paymentService:
+        slidingWindowSize: 10          # last 10 calls
+        failureRateThreshold: 50       # open if 50% fail
+        waitDurationInOpenState: 10s   # wait before half-open
+        permittedNumberOfCallsInHalfOpenState: 3
+```
+
+---
+
+### 4. Saga Pattern
+
+**What it is:** Managing distributed transactions across multiple services. Each service does its local transaction and publishes an event. If any step fails, compensating transactions are triggered to undo previous steps.
+
+**Two types:**
+- **Choreography** — each service listens for events and reacts (no central coordinator)
+- **Orchestration** — a central Saga Orchestrator tells each service what to do
+
+**Interview scenario:** *"How do you handle a transaction that spans Order, Payment, Inventory, and Notification services? If payment fails, how do you rollback the order?"*
+
+```
+CHOREOGRAPHY SAGA (event-driven, no central boss):
+
+  Order Service          Payment Service       Inventory Service
+       |                       |                      |
+   [Create Order]              |                      |
+       |---OrderCreated------->|                      |
+       |                  [Charge Card]               |
+       |                       |---PaymentDone------->|
+       |                       |                 [Reserve Stock]
+       |                       |                      |---StockReserved---> [Done]
+       |                       |                      |
+  (if payment fails):          |                      |
+       |<--PaymentFailed-----  |                      |
+   [Cancel Order]              |                      |
+
+
+ORCHESTRATION SAGA (central coordinator):
+
+                    +--------------------+
+                    |  SAGA ORCHESTRATOR |
+                    +--------------------+
+                     /        |          \
+        (1)Create   /   (2)Pay|     (3)Reserve
+                   v          v          v
+           [Order Svc]  [Payment Svc]  [Inventory Svc]
+                   
+  If Payment fails:
+    Orchestrator -> [Order Svc]: compensate -> Cancel Order
+```
+
+**Simple code (Choreography with Kafka):**
+```java
+// Order Service — starts the saga
+@Service
+public class OrderService {
+    public void createOrder(Order order) {
+        order.setStatus("PENDING");
+        orderRepo.save(order);
+        kafkaTemplate.send("order-created", new OrderCreatedEvent(order.getId(), order.getAmount()));
+    }
+
+    // Compensation: listen for payment failure
+    @KafkaListener(topics = "payment-failed")
+    public void onPaymentFailed(PaymentFailedEvent event) {
+        Order order = orderRepo.findById(event.getOrderId()).get();
+        order.setStatus("CANCELLED");
+        orderRepo.save(order);
+    }
+}
+
+// Payment Service — reacts to order created
+@KafkaListener(topics = "order-created")
+public void onOrderCreated(OrderCreatedEvent event) {
+    try {
+        chargeCard(event.getOrderId(), event.getAmount());
+        kafkaTemplate.send("payment-done", new PaymentDoneEvent(event.getOrderId()));
+    } catch (Exception e) {
+        kafkaTemplate.send("payment-failed", new PaymentFailedEvent(event.getOrderId()));
+    }
+}
+```
+
+---
+
+### 5. CQRS (Command Query Responsibility Segregation)
+
+**What it is:** Separate the **write model** (Commands — create/update/delete) from the **read model** (Queries — fetch data). Each can have its own database, optimised differently.
+
+**Advantages:**
+- Read DB can be denormalised for fast queries (no joins)
+- Write DB can be normalised for data integrity
+- Scale reads and writes independently
+
+**Interview scenario:** *"Your order dashboard loads slowly because of heavy JOIN queries on the same DB that's also handling writes. How do you fix this?"*
+
+```
+WITHOUT CQRS (same model for read and write):
+  Client --> [Order Service] --> [Single DB with heavy JOINs]
+                                  (normalized, slow reads)
+
+WITH CQRS:
+
+  COMMAND SIDE (writes):            QUERY SIDE (reads):
+  
+  Client                            Client
+    |                                 |
+    | POST /orders                    | GET /orders/dashboard
+    v                                 v
+  [Order Command Handler]          [Order Query Handler]
+    |                                 |
+    v                                 v
+  [Write DB - normalized]          [Read DB - denormalized]
+  (PostgreSQL)                     (MongoDB / Redis / ElasticSearch)
+    |                                 ^
+    |      sync via events            |
+    +----[OrderCreated Event]---------+
+         (Kafka / DB polling)
+```
+
+**Simple code:**
+```java
+// COMMAND side
+@RestController
+public class OrderCommandController {
+    @PostMapping("/orders")
+    public void createOrder(@RequestBody CreateOrderCommand cmd) {
+        Order order = new Order(cmd.getUserId(), cmd.getItems());
+        orderRepo.save(order);                             // write to PostgreSQL
+        eventBus.publish(new OrderCreatedEvent(order));   // sync to read side
+    }
+}
+
+// QUERY side — reads from a separate, denormalized collection
+@RestController
+public class OrderQueryController {
+    @GetMapping("/orders/dashboard")
+    public List<OrderSummary> getDashboard(@RequestParam String userId) {
+        // Read from MongoDB — no joins, pre-aggregated
+        return orderSummaryRepo.findByUserId(userId);
+    }
+}
+
+// Event listener that keeps read DB in sync
+@EventListener
+public void onOrderCreated(OrderCreatedEvent event) {
+    OrderSummary summary = new OrderSummary(
+        event.getOrderId(),
+        event.getUserName(),   // denormalized — no join needed later
+        event.getTotalAmount(),
+        event.getStatus()
+    );
+    orderSummaryRepo.save(summary);  // write to MongoDB read store
+}
+```
+
+---
+
+### 6. Event Sourcing
+
+**What it is:** Instead of storing the *current state* of an entity, store the *sequence of events* that led to that state. Current state is rebuilt by replaying events.
+
+**Advantages:**
+- Full audit log built-in
+- Reconstruct state at any point in time
+- Natural fit with CQRS and Kafka
+
+**Interview scenario:** *"How do you maintain a complete audit trail of all changes to an order?"* or *"How do you rebuild the state of an entity if your DB crashes?"*
+
+```
+TRADITIONAL (store current state):
+  Order table: | id | status   | amount |
+               | 1  | SHIPPED  | 500    |  <-- only final state, history lost
+
+EVENT SOURCING (store all events):
+  Events table: | id | event              | timestamp  |
+                | 1  | OrderCreated       | 10:00 AM   |
+                | 2  | PaymentProcessed   | 10:02 AM   |
+                | 3  | ItemsPicked        | 10:30 AM   |
+                | 4  | OrderShipped       | 11:00 AM   |
+
+  To get current state -> REPLAY all events in order:
+  
+  [] --> OrderCreated --> [{status: PENDING}]
+      --> PaymentProcessed --> [{status: PAID}]
+      --> ItemsPicked --> [{status: PICKING}]
+      --> OrderShipped --> [{status: SHIPPED}]   <- current state
+
+  To get state at 10:05 AM -> replay only events before 10:05 AM
+```
+
+**Simple code:**
+```java
+// Event classes
+public record OrderCreatedEvent(String orderId, String userId, double amount) {}
+public record PaymentProcessedEvent(String orderId, double amount) {}
+public record OrderShippedEvent(String orderId, String trackingId) {}
+
+// Aggregate — rebuilds itself from events
+public class Order {
+    private String id;
+    private String status;
+    private double amount;
+    private List<Object> events = new ArrayList<>();
+
+    // Apply events to rebuild state
+    public void apply(OrderCreatedEvent e) {
+        this.id = e.orderId();
+        this.status = "PENDING";
+        this.amount = e.amount();
+    }
+
+    public void apply(PaymentProcessedEvent e) {
+        this.status = "PAID";
+    }
+
+    public void apply(OrderShippedEvent e) {
+        this.status = "SHIPPED";
+    }
+
+    // Rebuild from event history
+    public static Order rehydrate(List<Object> eventHistory) {
+        Order order = new Order();
+        for (Object event : eventHistory) {
+            if (event instanceof OrderCreatedEvent e)    order.apply(e);
+            if (event instanceof PaymentProcessedEvent e) order.apply(e);
+            if (event instanceof OrderShippedEvent e)    order.apply(e);
+        }
+        return order;
+    }
+}
+```
+
+---
+
+## Quick Cheat Sheet
+
+```
+Pattern           | Problem it solves                        | Key tech
+------------------|------------------------------------------|-------------------------
+API Gateway       | Single entry, cross-cutting concerns     | Spring Cloud Gateway
+Service Discovery | Dynamic IP resolution between services   | Eureka, Consul
+Circuit Breaker   | Prevent cascading failures               | Resilience4j, Hystrix
+Saga              | Distributed transactions + rollback      | Kafka, Axon
+CQRS              | Separate read/write for performance      | Kafka + MongoDB
+Event Sourcing    | Full audit trail, state from events      | Axon Framework, Kafka
+```
+
+### 7. Bulkhead Pattern
+
+**What it is:** Isolate resources (thread pools, connection pools) for each service so that one slow/failing service cannot consume all resources and bring down everything else. Named after ship bulkheads that isolate compartments.
+
+**Advantages:**
+- Failure in one service doesn't starve other services of threads
+- Predictable resource usage per downstream dependency
+- Works well combined with Circuit Breaker
+
+**Interview scenario:** *"Your Order Service calls both Payment and Inventory. Payment goes slow and consumes all 200 threads. Now Inventory calls also fail even though Inventory is healthy. How do you fix this?"*
+
+```
+WITHOUT BULKHEAD:
+  Order Service - shared thread pool (200 threads)
+  |
+  +---> Payment Service (slow) -- consumes 190 threads -- STARVED
+  +---> Inventory Service (healthy) -- only 10 threads left -- FAILS too
+
+WITH BULKHEAD:
+  Order Service
+  |
+  +---> [Thread Pool A: 100 threads] ---> Payment Service
+  |          (Payment pool saturated, contained here)
+  |
+  +---> [Thread Pool B: 100 threads] ---> Inventory Service
+             (still healthy, unaffected)
+
+  Each pool is isolated — one filling up doesn't touch the other.
+```
+
+**Simple code (Resilience4j Bulkhead):**
+```java
+@Service
+public class OrderService {
+
+    // Separate bulkhead for Payment — max 10 concurrent calls
+    @Bulkhead(name = "paymentService", type = Bulkhead.Type.THREADPOOL)
+    public CompletableFuture<String> callPayment(Order order) {
+        return CompletableFuture.supplyAsync(() -> paymentClient.pay(order));
+    }
+
+    // Separate bulkhead for Inventory — max 10 concurrent calls
+    @Bulkhead(name = "inventoryService", type = Bulkhead.Type.THREADPOOL)
+    public CompletableFuture<String> callInventory(Order order) {
+        return CompletableFuture.supplyAsync(() -> inventoryClient.reserve(order));
+    }
+}
+```
+
+```yaml
+resilience4j:
+  bulkhead:
+    instances:
+      paymentService:
+        maxConcurrentCalls: 10      # max parallel calls allowed
+        maxWaitDuration: 500ms      # wait before rejecting if pool full
+      inventoryService:
+        maxConcurrentCalls: 10
+        maxWaitDuration: 500ms
+```
+
+---
+
+### 8. Sidecar Pattern
+
+**What it is:** Deploy a helper container (sidecar) alongside your main service container in the same pod. The sidecar handles cross-cutting concerns like logging, monitoring, proxying, and config — so your service doesn't need to. Core concept behind **Service Mesh (Istio/Linkerd)**.
+
+**Advantages:**
+- Main service focuses only on business logic
+- Sidecar handles observability, security, retries transparently
+- Language-agnostic — sidecar works with Java, Python, Go equally
+
+**Interview scenario:** *"How do you add distributed tracing and mTLS to 20 microservices without modifying each one's code?"* → Sidecar / Service Mesh.
+
+```
+WITHOUT SIDECAR:
+  Each service must implement:
+  - Logging
+  - Tracing
+  - mTLS
+  - Retry logic
+  - Circuit breaking
+  (repeated in every service, every language)
+
+WITH SIDECAR (same Kubernetes Pod):
+
+  +----------------------------------------------+
+  |                  K8s Pod                      |
+  |                                               |
+  |  +-------------------+  +------------------+ |
+  |  |   Order Service   |  |  Sidecar Proxy   | |
+  |  |   (your code)     |  |  (Envoy/Istio)   | |
+  |  |                   |  |                  | |
+  |  | - Business logic  |  | - mTLS           | |
+  |  | - REST endpoints  |  | - Retry          | |
+  |  |                   |  | - Tracing        | |
+  |  |                   |  | - Metrics        | |
+  |  +-------------------+  +------------------+ |
+  |         ^                      ^             |
+  |         | localhost:8080       | all traffic |
+  +----------------------------------------------+
+                                   |
+                          intercepted and handled
+                          before reaching service
+```
+
+**Simple code (Kubernetes deployment with Istio sidecar auto-injection):**
+```yaml
+# Just label your namespace — Istio injects sidecar automatically
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    istio-injection: enabled    # <-- this is all you need
+
+---
+# Your service deployment — no sidecar config needed in code
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: order-service
+          image: order-service:1.0
+          ports:
+            - containerPort: 8080
+      # Istio automatically injects the Envoy sidecar container here
+```
+
+```java
+// Your service code stays clean — zero sidecar awareness needed
+@RestController
+public class OrderController {
+    @GetMapping("/orders/{id}")
+    public Order getOrder(@PathVariable String id) {
+        return orderService.findById(id);   // sidecar handles tracing, mTLS, retries
+    }
+}
+```
+
+---
+
+### 9. Strangler Fig Pattern
+
+**What it is:** Gradually migrate a monolith to microservices by incrementally replacing pieces of the monolith. New features go into microservices. Old features are extracted one by one. The monolith is "strangled" over time until it's gone. Named after the strangler fig tree that grows around a host tree.
+
+**Advantages:**
+- Zero big-bang rewrite risk
+- System stays live throughout migration
+- Teams can migrate at their own pace
+
+**Interview scenario:** *"How do you migrate a 10-year-old monolith to microservices without shutting down the system?"*
+
+```
+PHASE 1 — Monolith handles everything:
+
+  Client ---> [Monolith: Orders + Users + Products + Payments]
+
+PHASE 2 — Extract User Service, proxy in front:
+
+  Client ---> [Proxy / API Gateway]
+                     |
+                     +--/users/**-----> [User Microservice]  (new)
+                     |
+                     +--/orders/**---> [Monolith]            (still running)
+                     +--/products/**-> [Monolith]
+                     +--/payments/**-> [Monolith]
+
+PHASE 3 — Extract more services over time:
+
+  Client ---> [API Gateway]
+                     |
+                     +--/users/**-----> [User Service]       (extracted)
+                     +--/orders/**---> [Order Service]       (extracted)
+                     +--/products/**-> [Product Service]     (extracted)
+                     +--/payments/**-> [Monolith]            (last piece)
+
+PHASE 4 — Monolith is gone:
+
+  Client ---> [API Gateway]
+                     |
+                     +--/users/**-----> [User Service]
+                     +--/orders/**---> [Order Service]
+                     +--/products/**-> [Product Service]
+                     +--/payments/**-> [Payment Service]
+```
+
+**Simple code (Spring Cloud Gateway as the proxy/strangler):**
+```java
+// Route new traffic to microservice, old traffic still to monolith
+@Bean
+public RouteLocator routes(RouteLocatorBuilder builder) {
+    return builder.routes()
+
+        // Extracted — goes to new User microservice
+        .route("user-service", r -> r
+            .path("/users/**")
+            .uri("lb://USER-SERVICE"))
+
+        // Extracted — goes to new Order microservice
+        .route("order-service", r -> r
+            .path("/orders/**")
+            .uri("lb://ORDER-SERVICE"))
+
+        // Not yet extracted — still goes to monolith
+        .route("monolith", r -> r
+            .path("/**")
+            .uri("http://legacy-monolith:8080"))
+
+        .build();
+}
+```
+
+---
+
+### 10. Retry + Timeout Pattern
+
+**What it is:** **Retry** — if a call fails due to a transient error (network blip, temporary overload), try again a few times before giving up. **Timeout** — don't wait forever for a response; fail fast after a threshold. Always used together.
+
+**Advantages:**
+- Handles transient network failures automatically
+- Prevents thread starvation from slow services (timeout)
+- Exponential backoff avoids thundering herd on a struggling service
+
+**Interview scenario:** *"A downstream service occasionally returns 503 due to brief overload. How do you handle this without failing the user request immediately?"*
+
+```
+WITHOUT RETRY + TIMEOUT:
+  Order Service --call--> Payment Service (brief 503)
+                <-- FAIL immediately shown to user
+
+WITH RETRY + EXPONENTIAL BACKOFF:
+
+  Attempt 1 at t=0ms   ---> Payment Service (503 - transient)
+  wait 100ms
+  Attempt 2 at t=100ms ---> Payment Service (503 - transient)
+  wait 200ms
+  Attempt 3 at t=300ms ---> Payment Service (200 OK) <-- success!
+
+WITH TIMEOUT (prevents waiting forever):
+
+  Order Service --call--> Payment Service (slow...)
+       |
+       | [timeout = 2s]
+       |
+       +-- 2s elapsed, no response --> throw TimeoutException --> fallback
+
+COMBINED (retry with timeout per attempt):
+
+  Attempt 1: timeout 2s -> fail
+  Attempt 2: timeout 2s -> fail
+  Attempt 3: timeout 2s -> success  OR  all retries exhausted -> fallback
+```
+
+**Simple code (Resilience4j Retry + Timeout):**
+```java
+@Service
+public class PaymentService {
+
+    @Retry(name = "paymentRetry", fallbackMethod = "paymentFallback")
+    @TimeLimiter(name = "paymentTimeout")
+    @CircuitBreaker(name = "paymentCB")   // often stacked together
+    public CompletableFuture<String> processPayment(Order order) {
+        return CompletableFuture.supplyAsync(() -> paymentClient.pay(order));
+    }
+
+    public CompletableFuture<String> paymentFallback(Order order, Exception ex) {
+        return CompletableFuture.completedFuture("Payment queued for retry");
+    }
+}
+```
+
+```yaml
+resilience4j:
+  retry:
+    instances:
+      paymentRetry:
+        maxAttempts: 3
+        waitDuration: 100ms
+        enableExponentialBackoff: true
+        exponentialBackoffMultiplier: 2   # 100ms -> 200ms -> 400ms
+        retryExceptions:
+          - feign.RetryableException
+          - java.net.SocketTimeoutException
+
+  timelimiter:
+    instances:
+      paymentTimeout:
+        timeoutDuration: 2s     # each attempt gets max 2s
+        cancelRunningFuture: true
+```
+
+---
+
+### 11. Outbox Pattern
+
+**What it is:** Solves the dual-write problem — when you need to save to DB AND publish an event to Kafka atomically. Without this, you can save to DB but fail before publishing the event (or vice versa), leaving the system inconsistent. Solution: write the event to an **Outbox table** in the same DB transaction, then a separate poller publishes it to Kafka.
+
+**Advantages:**
+- Guarantees at-least-once event delivery
+- No distributed transaction needed
+- DB and Kafka stay consistent
+
+**Interview scenario:** *"After saving an order to DB, your Kafka publish fails. Now downstream services never know the order was created. How do you fix this?"*
+
+```
+THE PROBLEM (dual write):
+  
+  Order Service:
+    Step 1: INSERT order into DB  --> success
+    Step 2: publish to Kafka      --> CRASH!  <-- event lost forever
+
+THE SOLUTION (Outbox Pattern):
+
+  Order Service - single DB transaction:
+  +-------------------------------------------------------+
+  | BEGIN TRANSACTION                                      |
+  |   INSERT INTO orders (id, status) VALUES (1, 'PENDING')|
+  |   INSERT INTO outbox (event_type, payload)             |
+  |         VALUES ('OrderCreated', '{orderId:1,...}')     |
+  | COMMIT                                                 |
+  +-------------------------------------------------------+
+  (both succeed or both fail — atomic)
+
+  Outbox Poller (separate process / Debezium CDC):
+  
+  [Outbox table] --poll every 1s--> [Outbox Poller] --> [Kafka]
+                                          |
+                                    mark as published
+                                    (or delete row)
+
+  Kafka Consumers:
+  [Order Created Event] --> [Inventory Service]
+                        --> [Notification Service]
+```
+
+**Simple code:**
+```java
+// Save order AND outbox event in same transaction
+@Service
+@Transactional
+public class OrderService {
+
+    public void createOrder(CreateOrderRequest req) {
+        // Step 1: Save the order
+        Order order = new Order(req.getUserId(), req.getItems());
+        order.setStatus("PENDING");
+        orderRepo.save(order);
+
+        // Step 2: Save event to outbox — same transaction, same DB
+        OutboxEvent event = new OutboxEvent();
+        event.setEventType("OrderCreated");
+        event.setAggregateId(order.getId());
+        event.setPayload(toJson(new OrderCreatedEvent(order)));
+        event.setPublished(false);
+        outboxRepo.save(event);
+
+        // No Kafka call here — poller handles it
+    }
+}
+
+// Outbox poller — runs separately, publishes unpublished events
+@Component
+public class OutboxPoller {
+
+    @Scheduled(fixedDelay = 1000)   // every 1 second
+    @Transactional
+    public void pollAndPublish() {
+        List<OutboxEvent> pending = outboxRepo.findByPublished(false);
+        for (OutboxEvent event : pending) {
+            kafkaTemplate.send(event.getEventType(), event.getPayload());
+            event.setPublished(true);
+            outboxRepo.save(event);
+        }
+    }
+}
+```
+
+```java
+// OutboxEvent entity
+@Entity
+@Table(name = "outbox")
+public class OutboxEvent {
+    @Id @GeneratedValue
+    private Long id;
+    private String eventType;
+    private String aggregateId;
+    @Column(columnDefinition = "TEXT")
+    private String payload;
+    private boolean published;
+    private LocalDateTime createdAt;
+}
+```
+
+---
+
+### 12. Rate Limiting
+
+**What it is:** Control how many requests a client can make in a given time window. Protects services from being overwhelmed by a single client (or a DDoS). Implemented at the API Gateway level typically.
+
+**Algorithms:**
+- **Token Bucket** — bucket fills at fixed rate, each request consumes a token. Allows bursts.
+- **Fixed Window** — count requests per fixed time window (e.g. 100 req/min). Simple but has edge burst problem.
+- **Sliding Window** — rolling time window. Smoother, no edge problem.
+
+**Interview scenario:** *"A single client is hammering your API with 10,000 requests/second and bringing your service down. How do you protect it?"*
+
+```
+TOKEN BUCKET (most common):
+
+  Bucket capacity: 10 tokens
+  Refill rate: 2 tokens/second
+
+  t=0s:  bucket=[10 tokens]
+  
+  Client sends 5 requests:
+  t=0s:  bucket=[5 tokens]  -> all allowed
+
+  Client sends 8 requests:
+  t=0s:  bucket=[5 tokens]  -> 5 allowed, 3 REJECTED (429)
+
+  t=1s:  bucket=[7 tokens]  (refilled 2)
+
+FIXED WINDOW:
+
+  Window: 1 minute, limit: 100 requests
+
+  12:00:00 - 12:00:59 -> counter = 100 -> LIMIT REACHED
+  12:01:00            -> counter resets to 0
+
+  Problem: 100 at 12:00:59 + 100 at 12:01:00 = 200 in 2 seconds  (edge burst)
+
+SLIDING WINDOW (fixes edge burst):
+
+  At any given moment, look back 60 seconds.
+  Count requests in that rolling window.
+  If < 100 -> allow. If >= 100 -> reject.
+```
+
+**Simple code (Spring Cloud Gateway with Redis rate limiter):**
+```java
+// application.yml — rate limiting at gateway level
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: order-service
+          uri: lb://ORDER-SERVICE
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10    # tokens added per second
+                redis-rate-limiter.burstCapacity: 20    # max bucket size
+                key-resolver: "#{@userKeyResolver}"     # limit per user
+
+# Uses Redis to store token bucket state (works across multiple gateway instances)
+```
+
+```java
+// Rate limit key — per user (from JWT), or per IP
+@Bean
+public KeyResolver userKeyResolver() {
+    return exchange -> Mono.justOrEmpty(
+        exchange.getRequest().getHeaders().getFirst("X-User-Id")
+    ).defaultIfEmpty("anonymous");
+}
+```
+
+```java
+// Custom in-memory rate limiter (for interviews — shows you understand the concept)
+@Component
+public class RateLimiter {
+    private final Map<String, Deque<Long>> requestLog = new ConcurrentHashMap<>();
+    private static final int MAX_REQUESTS = 100;
+    private static final long WINDOW_MS = 60_000;   // 1 minute sliding window
+
+    public boolean isAllowed(String clientId) {
+        long now = System.currentTimeMillis();
+        requestLog.putIfAbsent(clientId, new ArrayDeque<>());
+        Deque<Long> timestamps = requestLog.get(clientId);
+
+        // Remove timestamps outside the sliding window
+        while (!timestamps.isEmpty() && timestamps.peekFirst() < now - WINDOW_MS) {
+            timestamps.pollFirst();
+        }
+
+        if (timestamps.size() < MAX_REQUESTS) {
+            timestamps.addLast(now);
+            return true;      // allowed
+        }
+        return false;         // rate limited -> return 429
+    }
+}
+```
+
+---
+
+## Complete Cheat Sheet — All 12 Patterns
+
+```
+Pattern            | Problem it solves                          | Key tech
+-------------------|--------------------------------------------|---------------------------
+API Gateway        | Single entry, auth, routing                | Spring Cloud Gateway
+Service Discovery  | Dynamic service location                   | Eureka, Consul
+Circuit Breaker    | Prevent cascading failures                 | Resilience4j
+Saga               | Distributed transactions + rollback        | Kafka, Axon
+CQRS               | Separate read/write models                 | Kafka + MongoDB/Redis
+Event Sourcing     | Audit trail, rebuild state from events     | Axon, Kafka
+Bulkhead           | Isolate thread pools, contain failures     | Resilience4j
+Sidecar            | Cross-cutting concerns without code change | Istio, Envoy
+Strangler Fig      | Migrate monolith to microservices safely   | API Gateway as proxy
+Retry + Timeout    | Handle transient failures gracefully       | Resilience4j
+Outbox Pattern     | Guarantee DB + Kafka consistency           | Debezium, Scheduler
+Rate Limiting      | Protect services from overload/abuse       | Redis + Gateway
+```
+
+---
+
+## Interview Tip — Pattern Combos Often Asked Together
+
+```
+Scenario                                    | Patterns to mention
+--------------------------------------------|------------------------------------------
+"Service A is down, protect Service B"      | Circuit Breaker + Bulkhead + Retry
+"Distributed transaction across services"   | Saga + Outbox Pattern
+"Fast reads, heavy write load"              | CQRS + Event Sourcing
+"Migrate monolith"                          | Strangler Fig + API Gateway
+"Client hammering your API"                 | Rate Limiting + Bulkhead
+"How services talk to each other securely"  | Sidecar (Istio) + Service Discovery
+```
+
+<!-- </div> -->
+</script>
+
+<br>
+<a href="../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>
