@@ -991,7 +991,712 @@ Scenario                                    | Patterns to mention
 "How services talk to each other securely"  | Sidecar (Istio) + Service Discovery
 ```
 
-<!-- </div> -->
+### Possible Interview questions
+
+## Microservices Design Patterns — Scenario Possible Interview Q&A (4-6 Years Experience)
+
+Read the question first, frame your answer mentally, then check.
+
+---
+
+### Pattern 1 — API Gateway
+
+**Q: Your company has a mobile app, web app, and a partner API. All three call different combinations of 8 microservices. The mobile team complains they need to make 5 separate API calls to load one screen. How do you solve this?**
+
+**What interviewer expects at 4-6 yrs:**
+- Mention API Gateway for single entry point
+- Mention request aggregation / BFF pattern
+- Talk about auth, rate limiting at gateway level
+- Know at least one tech (Spring Cloud Gateway / Kong)
+
+**Answer:**
+```
+The core problems here are two:
+1. Multiple network calls from mobile = latency + battery drain
+2. Cross-cutting concerns (auth, rate limiting) scattered across 8 services
+
+Solution: API Gateway + BFF (Backend For Frontend) pattern.
+
+Step 1 — Introduce API Gateway:
+  - All three clients hit the Gateway, not individual services
+  - Gateway handles auth (JWT validation), rate limiting, SSL termination
+  - Routes /users/** to User Service, /orders/** to Order Service etc.
+
+Step 2 — BFF for mobile:
+  - Create a dedicated mobile aggregator endpoint: GET /mobile/home-screen
+  - Gateway (or a BFF service behind it) internally calls:
+      -> User Service (profile)
+      -> Order Service (recent orders)
+      -> Product Service (recommendations)
+  - Aggregates and returns ONE response to mobile
+  - Web app can have its own BFF with different aggregation
+
+Step 3 — Partner API:
+  - Separate route with stricter rate limiting
+  - API key auth instead of JWT
+
+Tech: Spring Cloud Gateway for routing + auth filter.
+      WebClient with parallel calls inside BFF aggregator.
+
+This reduces mobile's 5 calls to 1 call and removes all 
+cross-cutting logic from individual services.
+```
+
+---
+
+### Pattern 2 — Service Discovery
+
+**Q: You deploy Order Service on Kubernetes. It needs to call User Service. A junior dev hardcoded the User Service IP as `10.0.0.5:8080` in the config. Why is this a problem and how do you fix it?**
+
+**What interviewer expects at 4-6 yrs:**
+- Explain why hardcoding IP is dangerous in cloud/k8s
+- Explain client-side vs server-side discovery
+- Know Eureka or Kubernetes DNS as solution
+- Mention health checks and deregistration
+
+**Answer:**
+```
+Problem with hardcoding IPs:
+  - In Kubernetes, pods are ephemeral — they restart and get NEW IPs constantly
+  - If User Service pod restarts at 10.0.0.9, Order Service is still 
+    calling dead IP 10.0.0.5 -> connection refused
+  - In auto-scaling, new User Service instances have different IPs too
+  - No load balancing — always hitting one instance even if 5 are running
+
+Fix — Two approaches:
+
+Option A: Kubernetes DNS (server-side discovery):
+  - K8s creates a stable DNS name for every Service object
+  - Call http://user-service:8080 instead of IP
+  - K8s kube-proxy handles routing to healthy pods automatically
+  - Pod IPs change but DNS name stays fixed
+  - This is the preferred approach in K8s
+
+Option B: Eureka (client-side discovery, Spring Boot):
+  - Each service registers itself with name "USER-SERVICE" on startup
+  - Eureka stores: USER-SERVICE -> [10.0.0.5, 10.0.0.9, 10.0.0.12]
+  - Order Service queries Eureka: "give me USER-SERVICE instances"
+  - Ribbon/LoadBalancer picks one and calls it
+  - If a pod dies, Eureka removes it after health check fails (30s heartbeat)
+
+In a Spring Boot + K8s setup I'd use K8s DNS + Spring Cloud 
+LoadBalancer rather than Eureka, since K8s already does service 
+registration natively.
+
+Key point: never hardcode IPs. Always use logical service names.
+```
+
+---
+
+### Pattern 3 — Circuit Breaker
+
+**Q: Your Order Service calls Payment Service. Payment Service starts timing out due to high load. Within minutes, all 200 threads in Order Service are stuck waiting for Payment responses. New order requests start failing too. How do you prevent this?**
+
+**What interviewer expects at 4-6 yrs:**
+- Identify this as cascading failure / thread starvation
+- Explain Circuit Breaker states clearly (closed/open/half-open)
+- Mention fallback strategy
+- Know Resilience4j configuration
+- Bonus: mention combining with Timeout to free threads faster
+
+**Answer:**
+```
+This is a classic cascading failure. Payment is slow -> Order threads 
+pile up waiting -> Order Service runs out of threads -> healthy 
+requests also fail.
+
+Two-layer fix:
+
+Layer 1 — Timeout (immediate fix):
+  Set a timeout of 2s on Payment Service calls.
+  Threads don't wait forever — fail fast after 2s.
+  This stops thread starvation immediately.
+
+Layer 2 — Circuit Breaker (structural fix):
+
+  CLOSED (normal):
+    Calls go through. Track last 10 calls.
+    If failure rate > 50% -> trip to OPEN.
+
+  OPEN (Payment is struggling):
+    All calls immediately return fallback — no network call made.
+    "Payment service unavailable, your order is queued."
+    Threads freed instantly. Order Service stays healthy.
+    Wait 10 seconds.
+
+  HALF-OPEN (recovery check):
+    Allow 3 test calls through.
+    All succeed -> back to CLOSED.
+    Any fail -> back to OPEN.
+
+Fallback strategy at 4-6 yrs level:
+  - Don't just return an error
+  - Queue the payment request to Kafka
+  - Return "Order placed, payment processing"
+  - Payment processed asynchronously when service recovers
+
+Resilience4j config:
+  slidingWindowSize: 10
+  failureRateThreshold: 50
+  waitDurationInOpenState: 10s
+
+Key insight to say: Circuit Breaker protects the CALLER, not the 
+failing service. It keeps Order Service healthy even when Payment dies.
+```
+
+---
+
+### Pattern 4 — Saga Pattern
+
+**Q: User places an order. Your flow is: Create Order -> Charge Payment -> Reserve Inventory -> Send Notification. Payment succeeds but Inventory reservation fails. How do you ensure data consistency across these 4 services?**
+
+**What interviewer expects at 4-6 yrs:**
+- Know that 2PC doesn't work in microservices
+- Explain Saga (choreography vs orchestration)
+- Explain compensating transactions clearly
+- Know which approach to use when
+
+**Answer:**
+```
+2-Phase Commit (2PC) doesn't work here — it requires a distributed 
+lock coordinator and microservices don't share a DB or transaction manager.
+
+Solution: Saga Pattern with compensating transactions.
+
+I'd use Orchestration Saga here because the flow is sequential 
+and we need clear rollback control.
+
+Happy path:
+  Saga Orchestrator
+    -> Order Service:     Create Order (PENDING)         -> success
+    -> Payment Service:   Charge Card                    -> success
+    -> Inventory Service: Reserve Stock                  -> FAIL (out of stock)
+    -> Notification:      (never reached)
+
+Rollback (compensating transactions in reverse):
+  Saga Orchestrator
+    -> Payment Service:   Refund Card                    (compensate step 2)
+    -> Order Service:     Cancel Order (CANCELLED)       (compensate step 1)
+
+Key rule: every step must have a compensating transaction defined 
+BEFORE you implement the saga.
+
+Step            | Forward               | Compensating
+----------------|----------------------|------------------
+Create Order    | status = PENDING     | status = CANCELLED
+Charge Payment  | debit card           | refund card
+Reserve Stock   | decrement inventory  | increment inventory
+Send Email      | send "order placed"  | send "order cancelled"
+
+Choreography vs Orchestration choice:
+  - Choreography: simpler flows, fewer steps, no central point of failure
+    Each service reacts to events independently
+  - Orchestration: complex flows, clear rollback needed, easier to debug
+    Central orchestrator (could use Axon or a state machine)
+
+For this 4-step sequential flow I'd pick Orchestration — easier 
+to reason about failure and rollback at 4-6 yrs level.
+```
+
+---
+
+### Pattern 5 — CQRS
+
+**Q: Your Order Dashboard page loads slowly. It needs to show order details, customer name, product names, and shipping status — which requires joining 4 tables. The same DB is also handling heavy write traffic from new orders. How do you fix this?**
+
+**What interviewer expects at 4-6 yrs:**
+- Identify read/write contention as the problem
+- Explain CQRS — separate models, separate DBs
+- Know eventual consistency tradeoff
+- Mention sync mechanism (events / Kafka)
+
+**Answer:**
+```
+The problem is read/write contention on same DB + expensive JOINs 
+on a normalized schema that's optimized for writes, not reads.
+
+Solution: CQRS — separate the read model from the write model.
+
+Write side (Command):
+  - POST /orders hits Order Command Handler
+  - Saves to PostgreSQL (normalized, 4 tables, ACID)
+  - Optimized for data integrity, not query speed
+  - Publishes OrderCreated event to Kafka
+
+Read side (Query):
+  - GET /dashboard hits Order Query Handler
+  - Reads from MongoDB or Elasticsearch (denormalized)
+  - One document has everything: orderId, customerName, 
+    productNames, shippingStatus — NO joins needed
+  - Sub-millisecond reads
+
+Sync between write and read:
+  Kafka consumer listens to OrderCreated, OrderUpdated events
+  -> builds and saves the denormalized read document
+  -> slight eventual consistency (few ms to few seconds lag)
+
+Trade-off to mention (shows maturity):
+  - Read model is eventually consistent — not real-time
+  - If user creates order and immediately refreshes dashboard,
+    they might not see it for 1-2 seconds
+  - Acceptable for dashboards, not for payment confirmation screens
+  - For payment confirmation, query the write DB directly
+
+Scale benefit:
+  - Read DB (MongoDB) can be scaled independently with replicas
+  - Write DB (PostgreSQL) scaled independently
+  - Heavy read traffic doesn't affect write performance
+```
+
+---
+
+### Pattern 6 — Event Sourcing
+
+**Q: Your finance team says they need a complete audit trail of every state change on every order — who changed it, when, and from what state to what state. Your current system only stores the latest order status. How do you redesign this?**
+
+**What interviewer expects at 4-6 yrs:**
+- Explain current state storage vs event storage
+- Know how to replay events to rebuild state
+- Mention snapshots for performance
+- Know the tradeoff (query complexity)
+
+**Answer:**
+```
+Current design stores only latest state:
+  orders table: id=1, status=SHIPPED, amount=500
+  -> All history is gone. Can't answer "when did it become PAID?"
+
+Event Sourcing redesign:
+
+Instead of updating a row, append an event for every change:
+
+  order_events table:
+  | event_id | order_id | event_type         | payload              | timestamp  |
+  |----------|----------|--------------------|----------------------|------------|
+  | 1        | 101      | OrderCreated       | {amount:500,user:A}  | 10:00 AM   |
+  | 2        | 101      | PaymentProcessed   | {txnId:TXN123}       | 10:02 AM   |
+  | 3        | 101      | OrderShipped       | {trackingId:TRK999}  | 11:00 AM   |
+  | 4        | 101      | OrderDelivered     | {deliveredBy:John}   | 02:00 PM   |
+
+Current state = replay all events in sequence.
+State at any point = replay events up to that timestamp.
+
+Finance audit query:
+  "Show me all events for order 101" -> full trail with who, when, what.
+
+Performance concern — snapshots:
+  If order has 1000 events, replaying all is slow.
+  Solution: take a snapshot every 50 events.
+  Rebuild = load latest snapshot + replay events after snapshot.
+
+Trade-off to mention:
+  - Querying is harder — can't do SELECT status = 'SHIPPED'
+  - Need a separate read model (pairs naturally with CQRS)
+  - Storage grows indefinitely (append-only)
+  - Schema evolution is tricky (old events have old payload structure)
+
+Best used when:
+  - Audit trail is a hard requirement (finance, healthcare, banking)
+  - You need time-travel queries
+  - Naturally event-driven domain
+```
+
+---
+
+### Pattern 7 — Bulkhead
+
+**Q: Order Service calls both Payment Service and Recommendation Service. Payment Service starts responding slowly (3-4 seconds). You notice Recommendation Service calls are also failing even though Recommendation Service is perfectly healthy. Why is this happening and how do you fix it?**
+
+**What interviewer expects at 4-6 yrs:**
+- Diagnose thread pool exhaustion correctly
+- Explain bulkhead concept clearly (ship analogy is good)
+- Know semaphore vs thread pool bulkhead
+- Combine with Circuit Breaker in answer
+
+**Answer:**
+```
+Root cause: Thread pool exhaustion / resource starvation.
+
+Order Service has a shared thread pool of say 200 threads.
+Payment calls are taking 3-4 seconds each.
+100 concurrent users -> 100 threads stuck waiting for Payment.
+Now Recommendation calls also need threads -> none available -> fail.
+Recommendation is healthy but starved of resources by Payment's slowness.
+
+Fix: Bulkhead Pattern — isolate thread pools per downstream service.
+
+Like a ship: compartments are sealed so water in one 
+doesn't flood another.
+
+  [Order Service]
+       |
+       +---> [Bulkhead A: 50 threads] ---> Payment Service
+       |          (saturated, isolated here)
+       |
+       +---> [Bulkhead B: 50 threads] ---> Recommendation Service
+                  (unaffected, still serving requests)
+
+Two types of Resilience4j Bulkhead:
+
+1. Semaphore Bulkhead (same thread, limit concurrent calls):
+   - Lightweight
+   - Good for fast, non-blocking calls
+   - maxConcurrentCalls: 10
+
+2. Thread Pool Bulkhead (dedicated thread pool):
+   - Each service gets its own pool
+   - Best for blocking I/O calls like HTTP
+   - coreThreadPoolSize: 10, maxThreadPoolSize: 20
+
+For this scenario I'd use Thread Pool Bulkhead since Payment 
+calls are blocking and slow.
+
+Combined recommendation (shows depth):
+  Bulkhead = limits blast radius
+  Circuit Breaker = stops calls when failure rate is high
+  Timeout = frees threads after 2s instead of waiting 4s
+
+Use all three together on every external service call.
+```
+
+---
+
+### Pattern 8 — Sidecar
+
+**Q: You have 15 microservices written in Java, Python, and Go. Security team wants mutual TLS between all services. Observability team wants distributed tracing on every call. How do you implement this without modifying all 15 services?**
+
+**What interviewer expects at 4-6 yrs:**
+- Know the sidecar concept and why it's language-agnostic
+- Mention Istio/Envoy specifically
+- Know what a service mesh is
+- Explain how traffic is intercepted transparently
+
+**Answer:**
+```
+Modifying 15 services across 3 languages for mTLS and tracing 
+is months of work, risky, and hard to keep consistent.
+
+Solution: Sidecar Pattern via Service Mesh (Istio + Envoy).
+
+How it works:
+  - Deploy an Envoy proxy sidecar alongside EVERY service pod in K8s
+  - Istio auto-injects it — just label the namespace
+  - All inbound and outbound traffic is intercepted by the sidecar
+  - Your service code never changes
+
+mTLS via Sidecar:
+  Service A sidecar <--mTLS--> Service B sidecar
+  Services themselves communicate over plain HTTP on localhost
+  Sidecar handles certificate rotation, validation automatically
+  Istio Citadel issues and rotates certs
+
+Distributed Tracing via Sidecar:
+  Sidecar automatically adds trace headers (B3/W3C format)
+  Propagates context across service boundaries
+  Sends spans to Jaeger or Zipkin
+  Zero code change in any service
+
+What the sidecar handles for free:
+  - mTLS between all services
+  - Distributed tracing (Jaeger)
+  - Metrics (Prometheus scraping)
+  - Retries and timeouts (via Istio VirtualService config)
+  - Circuit breaking (via Istio DestinationRule)
+  - Traffic shifting (canary deployments — 10% to v2)
+
+One thing to mention as trade-off:
+  - Every pod now has 2 containers — extra memory and CPU overhead
+  - Adds latency (microseconds) for proxy hop
+  - Operational complexity — need to know Istio
+  - Worth it at 15+ services, overkill for 3-4 services
+```
+
+---
+
+### Pattern 9 — Strangler Fig
+
+**Q: Your company has a 8-year-old Java monolith handling Orders, Users, Products, Payments, and Reports. Business wants new features fast but the monolith is slow to change and risky to deploy. CTO says migrate to microservices but you cannot have any downtime. How do you approach this?**
+
+**What interviewer expects at 4-6 yrs:**
+- Know big bang rewrite is wrong answer
+- Explain incremental extraction with proxy
+- Know how to decide which service to extract first
+- Mention data migration strategy
+
+**Answer:**
+```
+Big bang rewrite is too risky — 6-12 months of parallel development, 
+high chance of failure, downtime risk. Strangler Fig is the right approach.
+
+Core idea: put a proxy in front of the monolith, 
+extract one service at a time, redirect traffic gradually.
+
+Step 1 — Put API Gateway in front (Day 1, zero risk):
+  All traffic: Client -> API Gateway -> Monolith
+  Nothing changes for users. Monolith unaware.
+
+Step 2 — Choose what to extract first:
+  Pick based on:
+  - Lowest coupling to rest of monolith (fewest shared DB tables)
+  - Highest business value / most requested new feature
+  - Smallest and well-defined bounded context
+  
+  Good first choice: User Service or Notification Service
+  Bad first choice: Orders (touches everything)
+
+Step 3 — Extract User Service:
+  - Build new User microservice with its own DB
+  - Migrate user data to new DB (dual-write period for safety)
+  - Update API Gateway: /users/** -> User Service
+  - /orders/**, /products/** -> still Monolith
+  - Monolith's user calls now go via HTTP to User Service
+
+Step 4 — Repeat for each domain:
+  Products -> Product Service
+  Orders -> Order Service  (extract last, most complex)
+  Monolith shrinks with each extraction.
+
+Step 5 — Monolith is empty, decommission it.
+
+Data migration strategy (important to mention):
+  - Dual-write: write to both old and new DB during transition
+  - Read from new DB, fallback to old if not found
+  - Once confident, stop writing to old DB
+  - This avoids risky one-shot data migration
+
+The proxy (API Gateway) is the key enabler — it decouples 
+clients from where services actually live.
+```
+
+---
+
+### Pattern 10 — Retry + Timeout
+
+**Q: Order Service calls Shipping Service. Sometimes Shipping Service returns 503 due to brief spikes. Your current code fails immediately on 503 and shows error to user. Also, sometimes Shipping never responds and Order Service threads hang for 30 seconds. Fix both problems.**
+
+**What interviewer expects at 4-6 yrs:**
+- Distinguish transient vs permanent failures (don't retry 400s)
+- Know exponential backoff and why it matters
+- Know timeout and why it must be per-attempt not total
+- Combine retry + timeout + circuit breaker
+
+**Answer:**
+```
+Two separate problems, two separate fixes:
+
+Problem 1 — 503 transient failures -> Retry with exponential backoff
+
+  503 = server temporarily overloaded = transient = safe to retry
+  400 = bad request = permanent = never retry (waste of time)
+  404 = not found = permanent = never retry
+
+  Retry config:
+    maxAttempts: 3
+    Attempt 1: immediate
+    Attempt 2: wait 100ms  (backoff)
+    Attempt 3: wait 200ms  (exponential — 2x each time)
+    All fail -> return fallback
+
+  Why exponential backoff?
+    If Shipping is overloaded and 100 Order instances all retry 
+    immediately at same time -> thundering herd -> makes it worse.
+    Spreading retries out gives Shipping time to recover.
+
+  Add jitter too (random 0-100ms added):
+    Prevents all retries firing at exactly the same millisecond.
+
+Problem 2 — Hanging calls -> Timeout
+
+  Set timeout per attempt: 2 seconds.
+  If Shipping doesn't respond in 2s -> TimeoutException -> retry or fallback.
+  Thread freed immediately after 2s instead of hanging 30s.
+
+  Important: timeout per attempt, not total timeout.
+    3 retries x 2s timeout = 6s max total
+    Not: 2s total split across 3 retries = 667ms each (too tight)
+
+Combined flow:
+  Attempt 1: call -> 2s timeout -> 503 -> wait 100ms
+  Attempt 2: call -> 2s timeout -> 503 -> wait 200ms  
+  Attempt 3: call -> 2s timeout -> 200 OK -> done
+
+  Or: all 3 fail -> Circuit Breaker opens -> fallback
+
+What NOT to retry:
+  - 400 Bad Request
+  - 401 Unauthorized
+  - 404 Not Found
+  - Payment deduction calls (non-idempotent — could double charge)
+  
+  Only retry idempotent operations or operations with 
+  idempotency keys.
+```
+
+---
+
+### Pattern 11 — Outbox Pattern
+
+**Q: Order Service saves order to PostgreSQL and then publishes OrderCreated event to Kafka. In production, you notice some orders are saved in DB but downstream services (Inventory, Notification) never received the event. Orders are stuck in PENDING forever. What is the root cause and how do you fix it?**
+
+**What interviewer expects at 4-6 yrs:**
+- Correctly identify dual-write / lack of atomicity as root cause
+- Know why 2PC with Kafka is not viable
+- Explain Outbox table approach clearly
+- Mention Debezium as production-grade solution
+
+**Answer:**
+```
+Root cause: Dual-write without atomicity.
+
+  orderRepo.save(order);                    // write 1 -> DB
+  kafkaTemplate.send("order-created", ...); // write 2 -> Kafka
+
+  These are two separate systems. No transaction spans both.
+  Failure scenarios:
+  - App crashes after DB save, before Kafka send -> event lost
+  - Kafka broker temporarily down -> event lost
+  - Network timeout on Kafka send -> event lost or duplicated
+
+Why not 2PC?
+  Kafka doesn't support XA transactions.
+  Even if it did, distributed 2PC is slow and fragile.
+
+Fix: Outbox Pattern.
+
+  Rule: never write to two external systems in one operation.
+  Instead, write event to the SAME DB as your business data 
+  in the SAME transaction. Let a separate process publish to Kafka.
+
+  @Transactional  // single DB transaction
+  public void createOrder(Order order) {
+      orderRepo.save(order);        // orders table
+      outboxRepo.save(new OutboxEvent("OrderCreated", order)); // outbox table
+      // NO Kafka call here
+  }
+  // Either both commit or both rollback. Atomic.
+
+  Separate Outbox Poller:
+    Every 1 second: SELECT * FROM outbox WHERE published = false
+    For each: kafkaTemplate.send(...)
+    Mark as published = true
+
+  If Kafka is down: events sit in outbox, retried next poll.
+  If app crashes mid-publish: unpublished events still in DB, 
+  retried on next startup.
+
+Production approach — Debezium (CDC):
+  Instead of polling, use Change Data Capture.
+  Debezium watches PostgreSQL WAL (write-ahead log).
+  Every INSERT into outbox table -> Debezium streams it to Kafka.
+  More efficient than polling, near real-time.
+  No outbox poller service needed.
+
+Trade-off:
+  At-least-once delivery — event may be published twice if 
+  poller crashes after Kafka send but before marking published.
+  Consumers must be idempotent (check if event already processed).
+```
+
+---
+
+### Pattern 12 — Rate Limiting
+
+**Q: Your public API is getting hammered. One client is sending 5000 requests/second, causing latency for all other clients. Another client is scraping your product catalog repeatedly. How do you handle this and what happens to the excess requests?**
+
+**What interviewer expects at 4-6 yrs:**
+- Know Token Bucket vs Fixed Window tradeoffs
+- Know where to implement (Gateway level)
+- Know per-client vs global rate limiting
+- Know the response (429 + Retry-After header)
+- Mention Redis for distributed rate limiting
+
+**Answer:**
+```
+Two different problems, same solution with different configs:
+
+Client A — 5000 req/s spike -> protect service from overload
+Client B — catalog scraping -> protect business / data
+
+Solution: Token Bucket Rate Limiting at API Gateway level.
+
+Why Token Bucket over Fixed Window?
+  Fixed Window problem: 
+    100 req/min limit. Client sends 100 at 12:00:59 and 100 at 12:01:00.
+    200 requests hit backend in 2 seconds. Window reset allowed burst.
+  Token Bucket: 
+    Bucket refills at 2 tokens/sec (120/min).
+    Burst up to bucket size (say 20) is allowed.
+    Beyond that, excess requests immediately rejected.
+    Smoother, no edge-of-window burst problem.
+
+Per-client rate limiting (not global):
+  Key by: API Key, User ID, or IP address
+  Client A: 100 req/min limit (their API tier)
+  Client B: 10 req/min limit (free tier)
+  Other clients: unaffected by A and B being throttled
+
+Why Redis for state?
+  You have 5 Gateway instances.
+  Rate limit state must be shared across all instances.
+  Redis: atomic INCR + EXPIRE commands.
+  Each gateway instance checks same Redis counter.
+
+Response to throttled client:
+  HTTP 429 Too Many Requests
+  Headers:
+    Retry-After: 30          (seconds until limit resets)
+    X-RateLimit-Limit: 100
+    X-RateLimit-Remaining: 0
+    X-RateLimit-Reset: 1720000060
+
+Tiered rate limiting (shows maturity):
+  Free tier:    100 req/min
+  Basic tier:   1000 req/min
+  Premium tier: 10000 req/min
+  Implemented via different Gateway route filters per API key tier.
+
+For catalog scraping (Client B):
+  Rate limit + add CAPTCHA challenge after 3 consecutive 
+  scraping patterns detected.
+  Or block entirely if ToS violation confirmed.
+```
+
+---
+
+## Rapid Fire — Short Questions at End of Interview
+
+```
+Q: Difference between Circuit Breaker and Retry?
+A: Retry handles transient failures by trying again.
+   Circuit Breaker stops trying when failure rate is too high.
+   Use both: Retry for occasional blips, Circuit Breaker 
+   to stop hammering a consistently failing service.
+
+Q: When would you NOT use Saga?
+A: When strong consistency is needed (banking ledger).
+   Saga gives eventual consistency.
+   Use a single service with ACID DB instead.
+
+Q: CQRS without Event Sourcing — is it valid?
+A: Yes. CQRS just separates read/write models.
+   Event Sourcing is a storage mechanism.
+   They complement each other but are independent.
+   You can sync read DB via DB triggers or Kafka without event sourcing.
+
+Q: Outbox vs just using Kafka transactions?
+A: Kafka transactions (exactly-once) only work within Kafka.
+   They don't span Kafka + PostgreSQL.
+   Outbox is the correct pattern for DB + Kafka atomicity.
+
+Q: Can you use Strangler Fig for DB migration too?
+A: Yes. Dual-write to old and new DB simultaneously.
+   Gradually shift reads to new DB.
+   Once consistent, stop writing to old DB.
+   Same incremental principle.
+```
+
+---
+
 </script>
 
 <br>
