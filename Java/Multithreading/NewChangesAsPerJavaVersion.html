@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's every class/interface with a one-liner on **what** and **why preferred over previous**.
+
+---
+
+## Java 1.0 — Raw Threads
+
+| Class / Interface | What it does | Why it existed |
+|---|---|---|
+| `Thread` | Represents an OS thread; call `.start()` to run | First way Java had to do concurrent work |
+| `Runnable` | Functional interface with `run()` — task with no return value | Separates the *task* from the *thread* that runs it |
+
+**Problem with Java 1.0:** You create one OS thread per task. 1000 tasks = 1000 OS threads = crash. No reuse, no lifecycle management.
+
+---
+
+## Java 5 — Thread Pools & Futures
+
+| Class / Interface | What it does | Why preferred over Thread/Runnable |
+|---|---|---|
+| `ExecutorService` | Interface to submit tasks to a managed thread pool | No more manual `new Thread()` — pool reuses threads across tasks |
+| `ThreadPoolExecutor` | Concrete pool with full control (core size, max size, queue, rejection policy) | Configurable; `Executors` factory methods use this internally |
+| `Callable<V>` | Like `Runnable` but returns a value and can throw checked exceptions | `Runnable.run()` returns void and can't throw — `Callable` fixes both |
+| `Future<V>` | Handle to an async result; `.get()` blocks until done | First way to actually *get a result back* from a thread pool task |
+
+**Problem remaining:** `Future.get()` blocks the calling thread. No chaining, no callbacks, no composing multiple futures together.
+
+---
+
+## Java 5 — Synchronization Primitives
+
+| Class / Interface | What it does | Why preferred |
+|---|---|---|
+| `synchronized` | Java keyword; acquires intrinsic lock on object — one thread at a time | Built into the language; simple for basic mutual exclusion |
+| `volatile` | Guarantees visibility of a variable across threads (no caching in CPU registers) | Lighter than `synchronized` when you only need visibility, not atomicity |
+| `AtomicInteger` | Thread-safe integer using CAS (Compare-And-Swap) hardware instruction | Lock-free — far faster than `synchronized` for single-variable counters under contention |
+| `AtomicLong` | Same as `AtomicInteger` but for `long` values | Same CAS benefit for 64-bit counters |
+
+**Why AtomicXxx over synchronized:** CAS is a single CPU instruction — no lock, no context switch, no thread blocking. `synchronized` blocks all other threads even for a tiny `i++`.
+
+---
+
+## Java 5 — Explicit Locks
+
+| Class / Interface | What it does | Why preferred over `synchronized` |
+|---|---|---|
+| `ReentrantLock` | Explicit lock with `lock()` / `unlock()` in `finally` | Adds `tryLock(timeout)` — avoids deadlocks by giving up after N seconds; `synchronized` waits forever |
+| `ReadWriteLock` | Two locks in one: many readers OR one writer, never both | `synchronized` blocks all threads even for reads; this allows concurrent reads, only serializes writes |
+| `Condition` | Like `Object.wait()/notify()` but tied to a `ReentrantLock` | Multiple condition queues per lock — fine-grained thread signalling; `wait/notify` is one queue per object |
+
+---
+
+## Java 5 — Coordination Utilities
+
+| Class / Interface | What it does | Why preferred |
+|---|---|---|
+| `CountDownLatch` | Main thread waits until N other threads each call `countDown()` | Cleaner than `Thread.join()` loops; one-shot, non-reusable |
+| `CyclicBarrier` | N threads all wait at a barrier until everyone arrives, then all proceed together | Like `CountDownLatch` but reusable across multiple phases; built-in barrier action |
+| `Semaphore` | Limits how many threads can access a resource concurrently (N permits) | `synchronized` allows only 1; Semaphore allows exactly N — perfect for rate limiting |
+| `Exchanger` | Two threads swap an object at a meeting point | Niche: eliminates shared state entirely for producer-consumer handoff |
+
+---
+
+## Java 5 — Thread-Safe Collections
+
+| Class / Interface | What it does | Why preferred over `Collections.synchronized*` |
+|---|---|---|
+| `ConcurrentHashMap` | Thread-safe map with segment/bucket-level locking | `Collections.synchronizedMap()` locks the entire map on every read/write; `ConcurrentHashMap` locks only the affected bucket — far more concurrent |
+| `CopyOnWriteArrayList` | Thread-safe list; every write copies the entire array | `synchronized` list blocks readers during writes; `CopyOnWrite` lets readers proceed lock-free (writes are expensive, reads are free) |
+| `BlockingQueue` | Thread-safe queue where `take()` waits if empty, `put()` waits if full | Built-in producer-consumer coordination — no manual `wait()/notify()` needed |
+
+---
+
+## Java 7 — Fork/Join Framework
+
+| Class / Interface | What it does | Why preferred over `ExecutorService` |
+|---|---|---|
+| `ForkJoinPool` | Work-stealing pool — idle threads steal tasks from busy threads' queues | Regular `ThreadPoolExecutor` has one shared queue — contention under load; `ForkJoinPool` gives each thread its own deque, reducing contention dramatically |
+| `RecursiveTask<V>` | A task that splits itself, forks subtasks, joins results (returns value) | Clean divide-and-conquer model — no manual splitting logic around `ExecutorService` |
+| `RecursiveAction` | Same as `RecursiveTask` but no return value | Use when you're transforming in-place (sort, fill array) and don't need a result back |
+
+---
+
+## Java 8 — CompletableFuture
+
+| Class / Interface | What it does | Why preferred over `Future` |
+|---|---|---|
+| `CompletableFuture<V>` | Async pipeline: `.thenApply()`, `.thenCompose()`, `.allOf()`, `.exceptionally()` | `Future.get()` blocks — you can't chain, combine, or react to completion without blocking; `CompletableFuture` is fully non-blocking and composable |
+
+**Key distinction:**
+```
+Future:              result = future.get();           // blocks calling thread
+CompletableFuture:   future.thenApply(r -> process(r)) // callback, no blocking
+                           .thenApply(r -> save(r))
+                           .exceptionally(e -> fallback());
+```
+
+---
+
+## Java 9 — Flow API (Reactive Streams)
+
+| Class / Interface | What it does | Why preferred over `CompletableFuture` |
+|---|---|---|
+| `Flow.Publisher` | Emits a stream of items to subscribers asynchronously | `CompletableFuture` is one value; `Publisher` emits zero to N values over time |
+| `Flow.Subscriber` | Receives items, errors, and completion signals | Standard interface — works with any reactive library (RxJava, Reactor) |
+| `Flow.Subscription` | Controls flow between publisher and subscriber via `request(n)` | Enables **backpressure** — subscriber tells publisher "give me only 10 items" — prevents overwhelming slow consumers |
+
+**Key reason:** `CompletableFuture` has no backpressure. If your producer is faster than your consumer, you get `OutOfMemoryError`. Flow API solves this.
+
+---
+
+## Java 19/21 — Virtual Threads (Project Loom)
+
+| Class / Method | What it does | Why preferred over platform threads |
+|---|---|---|
+| `Thread.ofVirtual().start(task)` | Creates a virtual thread managed by JVM, not OS | OS threads cost ~1MB RAM each and context-switch via kernel; virtual threads cost ~few KB and context-switch in JVM userspace |
+| `Executors.newVirtualThreadPerTaskExecutor()` | Each submitted task gets a fresh virtual thread — no pooling needed | With platform threads you *must* pool to avoid resource exhaustion; virtual threads are so cheap you just create one per task |
+| `StructuredTaskScope` (Java 21) | Fork subtasks in a scope; scope owns their lifecycle — cancel all if one fails | `CompletableFuture.allOf()` has no automatic cancellation; `StructuredTaskScope` enforces that child threads can't outlive their parent scope |
+
+**The one-line reason virtual threads win for IO-bound work:**
+
+```
+Platform thread doing DB call:    OS thread BLOCKED (sleeping, wasting RAM + kernel resources)
+Virtual thread doing DB call:     virtual thread UNMOUNTS from carrier, carrier picks up next task
+                                  -- same carrier thread serves thousands of virtual threads
+```
+
+---
+
+## Full Evolution — One Line Each
+
+```
+Thread              --> create & run OS thread manually
+Runnable            --> separate task definition from thread
+ExecutorService     --> reuse threads via pool, stop managing lifecycle
+Callable            --> Runnable that returns a value and can throw
+Future              --> get result from async task (blocks on .get())
+synchronized        --> one thread at a time via intrinsic lock
+volatile            --> visibility guarantee without locking
+AtomicInteger       --> lock-free counter via CAS, faster than synchronized
+ReentrantLock       --> synchronized + tryLock timeout + fairness
+ReadWriteLock       --> concurrent reads, exclusive writes
+CountDownLatch      --> wait for N events to happen (one-shot)
+CyclicBarrier       --> N threads wait for each other (reusable)
+Semaphore           --> allow exactly N threads into a section
+ConcurrentHashMap   --> thread-safe map without locking the whole map
+BlockingQueue       --> producer-consumer with built-in wait/notify
+ForkJoinPool        --> work-stealing pool for divide-and-conquer
+CompletableFuture   --> Future + non-blocking callbacks + chaining
+Flow API            --> async streams with backpressure (N values, not 1)
+Virtual Threads     --> millions of cheap JVM-managed threads for IO-bound work
+StructuredTaskScope --> fork child tasks with guaranteed lifecycle ownership
+```
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

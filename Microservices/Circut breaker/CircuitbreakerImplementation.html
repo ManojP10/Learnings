@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Got it! Here's everything directly in chat.
+
+---
+
+## ASCII Block Diagram
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                      CIRCUIT BREAKER PATTERN - MICROSERVICE                       |
+  +-----------------------------------------------------------------------------------+
+
+  REST Client
+      |
+      | POST /orders
+      v
+  +------------------+    calls    +-------------------+    HTTP    +------------------+
+  |                  |  -------->  |                   |  ------->  |                  |
+  |   Order Service  |             |  Circuit Breaker  |            | Inventory Service|
+  |   (Caller)       |  <--------  |  (Resilience4j)   |            | (Downstream)     |
+  |                  |  fallback   |                   |            |                  |
+  +------------------+             +-------------------+            +------------------+
+                                            |
+                          +-----------------+-----------------+
+                          |                 |                 |
+                     [ CLOSED ]         [ OPEN ]        [ HALF-OPEN ]
+                          |                 |                 |
+                   Calls pass thru    Fail-fast:         Trial calls:
+                   Counts failures    return fallback    test recovery
+                   (normal flow)      (no real call)     (limited calls)
+                                          |                   |
+                                          v                   v
+                                   +------------+      success --> [ CLOSED ]
+                                   |  Fallback  |      failure --> [ OPEN ]
+                                   |  Method    |
+                                   | (default   |
+                                   |  response) |
+                                   +------------+
+
+  STATE TRANSITIONS:
+  ==================
+
+           failure rate >= 50%
+  [CLOSED] --------------------> [OPEN]
+     ^                               |
+     |  trial calls succeed          | wait 10s (waitDurationInOpenState)
+     |                               v
+  [HALF-OPEN] <---------------  [OPEN auto-transitions]
+     |
+     | trial calls fail
+     v
+  [OPEN]
+
+  CONFIG SUMMARY:
+  ===============
+  slidingWindowSize         = 10    <- last N calls evaluated
+  failureRateThreshold      = 50    <- % failures to trip OPEN
+  waitDurationInOpenState   = 10s   <- how long CB stays OPEN
+  permittedCallsInHalfOpen  = 3     <- trial calls before deciding
+  slowCallDurationThreshold = 2s    <- calls > 2s = slow
+  slowCallRateThreshold     = 60    <- % slow calls to trip OPEN
+```
+
+---
+
+## Project Structure
+
+```
+order-service/
+ src/main/java/com/demo/
+  |-- OrderServiceApplication.java
+  |-- controller/
+  |     OrderController.java
+  |-- service/
+  |     OrderService.java
+  |-- client/
+  |     InventoryClient.java
+  |-- dto/
+  |     OrderRequest.java
+  |     OrderResponse.java
+  |     InventoryResponse.java
+  |-- config/
+  |     CircuitBreakerEventConfig.java
+  |-- exception/
+        BusinessException.java
+ src/main/resources/
+      application.yml
+```
+
+---
+
+## pom.xml
+
+```xml
+<dependencies>
+
+    <!-- Spring Boot Web -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- Resilience4j Circuit Breaker -->
+    <dependency>
+        <groupId>io.github.resilience4j</groupId>
+        <artifactId>resilience4j-spring-boot3</artifactId>
+        <version>2.2.0</version>
+    </dependency>
+
+    <!-- AOP - required for @CircuitBreaker annotation to work -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+
+    <!-- OpenFeign - makes HTTP calls look like local method calls -->
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-openfeign</artifactId>
+    </dependency>
+
+    <!-- Actuator - exposes /actuator/circuitbreakers endpoint -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Lombok -->
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+
+</dependencies>
+```
+
+---
+
+## application.yml
+
+```yaml
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+
+# Base URL of downstream Inventory Service
+inventory:
+  service:
+    url: http://localhost:8082
+
+# ── Resilience4j Circuit Breaker ──────────────────────────────
+resilience4j:
+  circuitbreaker:
+    instances:
+      inventoryCB:                               # matches @CircuitBreaker(name=)
+        slidingWindowType: COUNT_BASED           # COUNT_BASED or TIME_BASED
+        slidingWindowSize: 10                    # evaluate last 10 calls
+        failureRateThreshold: 50                 # >50% failures  --> OPEN
+        waitDurationInOpenState: 10s             # stay OPEN for 10 seconds
+        permittedNumberOfCallsInHalfOpenState: 3 # 3 trial calls in HALF-OPEN
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        slowCallDurationThreshold: 2s            # calls > 2s are "slow"
+        slowCallRateThreshold: 60                # >60% slow calls --> OPEN
+        recordExceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - feign.FeignException
+        ignoreExceptions:
+          - com.demo.exception.BusinessException # business errors don't trip CB
+
+# ── Actuator ──────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,circuitbreakers,circuitbreakerevents
+  health:
+    circuitbreakers:
+      enabled: true
+```
+
+---
+
+## OrderServiceApplication.java
+
+```java
+@SpringBootApplication
+@EnableFeignClients          // scans and registers @FeignClient interfaces
+public class OrderServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderServiceApplication.class, args);
+    }
+}
+```
+
+---
+
+## InventoryClient.java (Feign)
+
+```java
+// Feign turns this interface into a real HTTP client at runtime
+@FeignClient(
+    name = "inventory-service",
+    url  = "${inventory.service.url}"    // from application.yml
+)
+public interface InventoryClient {
+
+    @GetMapping("/inventory/{productId}")
+    InventoryResponse getStock(@PathVariable("productId") String productId);
+}
+```
+
+---
+
+## DTOs
+
+```java
+// OrderRequest.java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderRequest {
+    private String productId;
+    private int    quantity;
+}
+
+// InventoryResponse.java
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class InventoryResponse {
+    private String  productId;
+    private boolean available;
+    private int     quantity;
+    private String  message;
+}
+
+// OrderResponse.java
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderResponse {
+    private String orderId;
+    private String status;
+    private String inventoryMessage;
+}
+```
+
+---
+
+## BusinessException.java
+
+```java
+public class BusinessException extends RuntimeException {
+    public BusinessException(String message) {
+        super(message);
+    }
+}
+```
+
+---
+
+## CircuitBreakerEventConfig.java
+
+```java
+@Configuration
+public class CircuitBreakerEventConfig {
+
+    private static final Logger log =
+        LoggerFactory.getLogger(CircuitBreakerEventConfig.class);
+
+    // Attach listeners to log every CB state change
+    @Bean
+    public CircuitBreakerRegistry circuitBreakerRegistry() {
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+
+        registry.getEventPublisher()
+            .onEntryAdded(entry -> {
+                CircuitBreaker cb = entry.getAddedEntry();
+
+                cb.getEventPublisher()
+                    .onStateTransition(event ->
+                        log.warn("CB [{}] state: {} --> {}",
+                            event.getCircuitBreakerName(),
+                            event.getStateTransition().getFromState(),
+                            event.getStateTransition().getToState()))
+
+                    .onFailureRateExceeded(event ->
+                        log.error("CB [{}] failure rate: {}%",
+                            event.getCircuitBreakerName(),
+                            event.getFailureRate()))
+
+                    .onCallNotPermitted(event ->
+                        log.warn("CB [{}] is OPEN -- call blocked",
+                            event.getCircuitBreakerName()));
+            });
+
+        return registry;
+    }
+}
+```
+
+---
+
+## OrderService.java — The Core
+
+```java
+@Service
+public class OrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
+    @Autowired
+    private InventoryClient inventoryClient;
+
+    @Autowired
+    private OrderRepository orderRepository;
+
+
+    // ── Step 1: CB wraps the Feign call ──────────────────────────────
+    //    If inventoryClient.getStock() throws FeignException or timeout,
+    //    Resilience4j intercepts it and calls fallbackInventory() instead.
+
+    @CircuitBreaker(name = "inventoryCB", fallbackMethod = "fallbackInventory")
+    public InventoryResponse checkInventory(String productId) {
+        log.info("Calling Inventory Service for productId={}", productId);
+        return inventoryClient.getStock(productId);
+    }
+
+
+    // ── Step 2: Fallback method ───────────────────────────────────────
+    //    RULES:
+    //    1. Same name pattern: methodName + "Fallback" OR any name declared above
+    //    2. Same return type as the protected method (InventoryResponse)
+    //    3. Same parameters PLUS one extra Throwable at the end
+    //    Resilience4j resolves this by name+signature at startup.
+
+    public InventoryResponse fallbackInventory(String productId, Throwable t) {
+        log.warn("Fallback triggered for productId={}, reason={}", productId, t.getMessage());
+
+        // Return a safe default instead of propagating the error upstream
+        return InventoryResponse.builder()
+            .productId(productId)
+            .available(false)
+            .quantity(0)
+            .message("Inventory service unavailable. Please retry shortly.")
+            .build();
+    }
+
+
+    // ── Step 3: Business method uses CB-protected call ────────────────
+    public OrderResponse placeOrder(OrderRequest request) {
+
+        InventoryResponse inventory = checkInventory(request.getProductId());
+
+        if (!inventory.isAvailable()) {
+            // BusinessException is in ignoreExceptions -- will NOT trip the CB
+            throw new BusinessException("Product out of stock: " + request.getProductId());
+        }
+
+        Order order = Order.builder()
+            .orderId(UUID.randomUUID().toString())
+            .productId(request.getProductId())
+            .quantity(request.getQuantity())
+            .status("PLACED")
+            .build();
+
+        orderRepository.save(order);
+
+        return OrderResponse.builder()
+            .orderId(order.getOrderId())
+            .status(order.getStatus())
+            .inventoryMessage(inventory.getMessage())
+            .build();
+    }
+}
+```
+
+---
+
+## OrderController.java
+
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    @Autowired
+    private OrderService orderService;
+
+    // Place an order -- triggers CB-protected inventory check internally
+    @PostMapping
+    public ResponseEntity<OrderResponse> placeOrder(@RequestBody OrderRequest request) {
+        OrderResponse response = orderService.placeOrder(request);
+        return ResponseEntity.ok(response);
+    }
+
+    // Directly check stock -- also CB-protected
+    @GetMapping("/inventory/{productId}")
+    public ResponseEntity<InventoryResponse> checkInventory(@PathVariable String productId) {
+        InventoryResponse response = orderService.checkInventory(productId);
+        return ResponseEntity.ok(response);
+    }
+
+    // Business errors return 422, NOT 500
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity<String> handleBusiness(BusinessException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(ex.getMessage());
+    }
+}
+```
+
+---
+
+## Test it
+
+```bash
+# Start Inventory Service on 8082, Order Service on 8081
+
+# Place an order
+curl -X POST http://localhost:8081/orders \
+  -H "Content-Type: application/json" \
+  -d '{"productId":"PROD-101","quantity":2}'
+
+# Check CB live state
+curl http://localhost:8081/actuator/circuitbreakers
+
+# See full transition history (CLOSED -> OPEN etc.)
+curl http://localhost:8081/actuator/circuitbreakerevents/inventoryCB
+
+# Kill Inventory Service, keep hitting /orders --> watch CB trip OPEN
+# Restart Inventory Service --> watch CB go HALF-OPEN then CLOSED
+```
+
+---
+
+## Interview Key Points
+
+| What | Why it matters |
+|---|---|
+| `@CircuitBreaker` needs `spring-boot-starter-aop` | Annotation works via AOP proxy — without AOP, the annotation is silently ignored |
+| Fallback signature rule | Same return type + same params + `Throwable` at end — get this wrong and app fails at startup |
+| `ignoreExceptions` | Business errors (stock out) must NOT trip the CB — only infra failures should |
+| `slidingWindowType` | `COUNT_BASED` = last N calls; `TIME_BASED` = last N seconds. COUNT_BASED is easier to explain |
+| Slow call threshold | CB can open on latency too, not just exceptions — important for cascading failure prevention |
+| `automaticTransitionFromOpenToHalfOpen: true` | Without this, CB stays OPEN forever until a call manually probes it |
+| Actuator endpoint | `/actuator/circuitbreakerevents/inventoryCB` shows full event log — production debugging tool |
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

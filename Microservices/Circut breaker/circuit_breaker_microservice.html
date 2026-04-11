@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Circuit Breaker - Microservice Implementation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: "Courier New", Courier, monospace;
+    padding: 40px 24px;
+  }
+  h1 {
+    color: #00d4aa;
+    font-size: 18px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    text-align: center;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #888;
+    font-size: 12px;
+    margin-bottom: 36px;
+    letter-spacing: 1px;
+  }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 0;
+    flex-wrap: wrap;
+  }
+  .tab {
+    padding: 8px 18px;
+    background: #0f0f23;
+    border: 1px solid #2a2a4a;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-family: "Courier New", monospace;
+    font-size: 12px;
+    color: #888;
+    letter-spacing: 0.5px;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: #00d4aa; border-color: #00d4aa44; }
+  .tab.active { background: #16213e; color: #00d4aa; border-color: #00d4aa55; }
+
+  /* ── Panels ── */
+  .panel {
+    display: none;
+    background: #16213e;
+    border: 1px solid #2a2a4a;
+    border-radius: 0 6px 6px 6px;
+    padding: 28px 32px;
+  }
+  .panel.active { display: block; }
+
+  /* ── ASCII diagram ── */
+  pre {
+    font-size: 13px;
+    line-height: 1.75;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .g  { color: #00d4aa; }   /* green  - Order/caller */
+  .y  { color: #ffd700; }   /* yellow - Circuit Breaker */
+  .r  { color: #ff6b6b; }   /* red    - OPEN state */
+  .o  { color: #ffaa55; }   /* orange - HALF-OPEN */
+  .b  { color: #64b5f6; }   /* blue   - downstream */
+  .p  { color: #ce93d8; }   /* purple - fallback */
+  .gr { color: #888; }      /* gray   - comments */
+
+  /* ── Code blocks ── */
+  .code-section { margin-bottom: 28px; }
+  .code-label {
+    font-size: 11px;
+    color: #00d4aa;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    border-left: 3px solid #00d4aa;
+    padding-left: 10px;
+  }
+  .code-box {
+    background: #0f0f23;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 18px 22px;
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-x: auto;
+    position: relative;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: #2a2a4a;
+    border: 1px solid #3a3a5a;
+    color: #aaa;
+    font-family: "Courier New", monospace;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover { background: #00d4aa22; color: #00d4aa; border-color: #00d4aa55; }
+
+  /* ── Syntax colors ── */
+  .kw  { color: #569cd6; }   /* keyword */
+  .an  { color: #9cdcfe; }   /* annotation */
+  .st  { color: #ce9178; }   /* string */
+  .cm  { color: #6a9955; }   /* comment */
+  .tp  { color: #4ec9b0; }   /* type */
+  .nm  { color: #dcdcaa; }   /* method name */
+
+  /* ── Key points table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px; }
+  th { color: #00d4aa; text-align: left; padding: 8px 12px; border-bottom: 1px solid #2a2a4a; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+  td { padding: 9px 12px; border-bottom: 1px solid #1a1a2e; vertical-align: top; line-height: 1.6; }
+  tr:hover td { background: #0f0f2366; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+  }
+  .closed  { background: #00d4aa22; color: #00d4aa; border: 1px solid #00d4aa44; }
+  .open    { background: #ff6b6b22; color: #ff6b6b; border: 1px solid #ff6b6b44; }
+  .halfopen{ background: #ffaa5522; color: #ffaa55; border: 1px solid #ffaa5544; }
+
+  .copy-all-btn {
+    display: block;
+    margin: 20px auto 0;
+    padding: 10px 32px;
+    background: #00d4aa;
+    color: #0f0f23;
+    border: none;
+    border-radius: 6px;
+    font-family: "Courier New", monospace;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+    letter-spacing: 1px;
+    transition: background 0.15s;
+  }
+  .copy-all-btn:hover { background: #00b894; }
+  .flash { color: #00d4aa; font-size: 12px; text-align: center; margin-top: 8px; height: 18px; }
+</style>
+</head>
+<body>
+
+<h1>Circuit Breaker Pattern</h1>
+<div class="subtitle">Resilience4j + Spring Boot Microservice Implementation</div>
+
+<!-- ── TABS ── -->
+<div class="tabs">
+  <div class="tab active"  onclick="show('diagram')">[ Diagram ]</div>
+  <div class="tab"         onclick="show('pom')">[ pom.xml ]</div>
+  <div class="tab"         onclick="show('yml')">[ application.yml ]</div>
+  <div class="tab"         onclick="show('config')">[ CB Config ]</div>
+  <div class="tab"         onclick="show('service')">[ Service ]</div>
+  <div class="tab"         onclick="show('controller')">[ Controller ]</div>
+  <div class="tab"         onclick="show('client')">[ Feign Client ]</div>
+  <div class="tab"         onclick="show('keypoints')">[ Interview Notes ]</div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 1 — ASCII DIAGRAM
+════════════════════════════════════════════════ -->
+<div id="tab-diagram" class="panel active">
+<pre>
+<span class="gr">  ┌─────────────────────────────────────────────────────────────────────────────────┐</span>
+<span class="gr">  │                     CIRCUIT BREAKER PATTERN — MICROSERVICE                      │</span>
+<span class="gr">  └─────────────────────────────────────────────────────────────────────────────────┘</span>
+
+<span class="gr">  ┌─────────────┐       HTTP call        ┌──────────────────────────────────────────────┐</span>
+<span class="gr">  │             │  ────────────────────> │           CIRCUIT BREAKER                    │</span>
+<span class="g">  │   Order     │</span>                       <span class="y">│                                              │</span>
+<span class="g">  │   Service   │</span>                       <span class="y">│   @CircuitBreaker(name = "inventoryCB",   │</span>
+<span class="g">  │  (Caller)   │</span>                       <span class="y">│    fallbackMethod = "fallbackInventory")  │</span>
+<span class="gr">  │             │  <─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │                                              │</span>
+<span class="gr">  └─────────────┘   fallback response   └──────────────────────────────────────────────┘</span>
+                                                          |
+                          ┌───────────────────────────────┼───────────────────────────────┐
+                          |                               |                               |
+                    <span class="g">[ CLOSED ]</span>                    <span class="r">[ OPEN ]</span>                    <span class="o">[ HALF-OPEN ]</span>
+                          |                               |                               |
+               <span class="g">   Normal operation</span>          <span class="r">  Trips after N% failures</span>      <span class="o"> Trial request</span>
+               <span class="g">   Calls go through</span>          <span class="r">  Returns fallback instantly</span>    <span class="o"> sent to check</span>
+               <span class="g">   Counts failures</span>           <span class="r">  Waits waitDurationInOpen</span>      <span class="o"> if service is</span>
+                          |                               |                               <span class="o"> back up</span>
+                          |                               |                               |
+                          v                               v                               v
+              <span class="gr">  ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────────┐</span>
+              <span class="b">  │  Inventory      │</span>       <span class="p">│  Fallback       │</span>       <span class="b">│  Inventory          │</span>
+              <span class="b">  │  Service        │</span>       <span class="p">│  Method         │</span>       <span class="b">│  Service            │</span>
+              <span class="b">  │  (Downstream)   │</span>       <span class="p">│  (cached data / │</span>       <span class="b">│  (Downstream)       │</span>
+              <span class="b">  │                 │</span>       <span class="p">│   default resp) │</span>       <span class="b">│                     │</span>
+              <span class="gr">  └─────────────────┘</span>       <span class="gr">└─────────────────┘</span>       <span class="gr">└─────────────────────┘</span>
+              <span class="gr">                                                        success -> CLOSED</span>
+              <span class="gr">                                                        failure -> OPEN again</span>
+
+
+<span class="gr">  STATE TRANSITIONS:</span>
+<span class="gr">  ==================</span>
+<span class="gr">                                failure rate >= threshold</span>
+<span class="g">           [ CLOSED ]</span> <span class="gr">─────────────────────────────────────────────></span> <span class="r">[ OPEN ]</span>
+<span class="g">               ^</span>                                                           <span class="r">|</span>
+<span class="g">               |</span>   success                                 waitDuration    <span class="r">|</span>
+<span class="o">          [ HALF-OPEN ]</span> <span class="gr"><───────────────────────────────────────────────</span> <span class="r">|</span>
+<span class="o">               |</span>
+<span class="o">               |</span>   failure
+<span class="r">           [ OPEN ]</span> <span class="gr"><──────────────────────────────────────────────────────</span>
+
+
+<span class="gr">  CONFIGURATION (application.yml):</span>
+<span class="gr">  =================================</span>
+<span class="gr">  slidingWindowSize        = 10     # last N calls measured</span>
+<span class="gr">  failureRateThreshold     = 50     # 50% failures -> OPEN</span>
+<span class="gr">  waitDurationInOpenState  = 10s    # time before trying HALF-OPEN</span>
+<span class="gr">  permittedCallsInHalfOpen = 3      # trial calls in HALF-OPEN</span>
+<span class="gr">  slowCallDurationThreshold= 2s     # calls > 2s counted as slow</span>
+<span class="gr">  slowCallRateThreshold    = 60     # 60% slow calls -> OPEN</span>
+</pre>
+  <button class="copy-all-btn" onclick="copyDiagram()">Copy Diagram</button>
+  <div class="flash" id="flash-diag"></div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 2 — pom.xml
+════════════════════════════════════════════════ -->
+<div id="tab-pom" class="panel">
+  <div class="code-section">
+    <div class="code-label">pom.xml — Dependencies</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="cm">&lt;!-- Spring Boot Web --&gt;</span>
+&lt;<span class="tp">dependency</span>&gt;
+    &lt;<span class="tp">groupId</span>&gt;org.springframework.boot&lt;/<span class="tp">groupId</span>&gt;
+    &lt;<span class="tp">artifactId</span>&gt;spring-boot-starter-web&lt;/<span class="tp">artifactId</span>&gt;
+&lt;/<span class="tp">dependency</span>&gt;
+
+<span class="cm">&lt;!-- Resilience4j Circuit Breaker --&gt;</span>
+&lt;<span class="tp">dependency</span>&gt;
+    &lt;<span class="tp">groupId</span>&gt;io.github.resilience4j&lt;/<span class="tp">groupId</span>&gt;
+    &lt;<span class="tp">artifactId</span>&gt;resilience4j-spring-boot3&lt;/<span class="tp">artifactId</span>&gt;
+    &lt;<span class="tp">version</span>&gt;2.2.0&lt;/<span class="tp">version</span>&gt;
+&lt;/<span class="tp">dependency</span>&gt;
+
+<span class="cm">&lt;!-- Spring AOP (required for @CircuitBreaker annotation) --&gt;</span>
+&lt;<span class="tp">dependency</span>&gt;
+    &lt;<span class="tp">groupId</span>&gt;org.springframework.boot&lt;/<span class="tp">groupId</span>&gt;
+    &lt;<span class="tp">artifactId</span>&gt;spring-boot-starter-aop&lt;/<span class="tp">artifactId</span>&gt;
+&lt;/<span class="tp">dependency</span>&gt;
+
+<span class="cm">&lt;!-- OpenFeign for calling downstream service --&gt;</span>
+&lt;<span class="tp">dependency</span>&gt;
+    &lt;<span class="tp">groupId</span>&gt;org.springframework.cloud&lt;/<span class="tp">groupId</span>&gt;
+    &lt;<span class="tp">artifactId</span>&gt;spring-cloud-starter-openfeign&lt;/<span class="tp">artifactId</span>&gt;
+&lt;/<span class="tp">dependency</span>&gt;
+
+<span class="cm">&lt;!-- Actuator — exposes /actuator/circuitbreakers endpoint --&gt;</span>
+&lt;<span class="tp">dependency</span>&gt;
+    &lt;<span class="tp">groupId</span>&gt;org.springframework.boot&lt;/<span class="tp">groupId</span>&gt;
+    &lt;<span class="tp">artifactId</span>&gt;spring-boot-starter-actuator&lt;/<span class="tp">artifactId</span>&gt;
+&lt;/<span class="tp">dependency</span>&gt;</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 3 — application.yml
+════════════════════════════════════════════════ -->
+<div id="tab-yml" class="panel">
+  <div class="code-section">
+    <div class="code-label">application.yml</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="an">server</span>:
+  <span class="an">port</span>: <span class="st">8081</span>
+
+<span class="an">spring</span>:
+  <span class="an">application</span>:
+    <span class="an">name</span>: <span class="st">order-service</span>
+
+<span class="cm"># Feign client base URL for downstream Inventory Service</span>
+<span class="an">inventory</span>:
+  <span class="an">service</span>:
+    <span class="an">url</span>: <span class="st">http://localhost:8082</span>
+
+<span class="cm"># ── Resilience4j Circuit Breaker config ──────────────────────</span>
+<span class="an">resilience4j</span>:
+  <span class="an">circuitbreaker</span>:
+    <span class="an">instances</span>:
+      <span class="an">inventoryCB</span>:                          <span class="cm"># name matches @CircuitBreaker(name=)</span>
+        <span class="an">slidingWindowType</span>: <span class="st">COUNT_BASED</span>      <span class="cm"># COUNT_BASED or TIME_BASED</span>
+        <span class="an">slidingWindowSize</span>: <span class="st">10</span>              <span class="cm"># last 10 calls evaluated</span>
+        <span class="an">failureRateThreshold</span>: <span class="st">50</span>           <span class="cm"># >50% failures -> OPEN</span>
+        <span class="an">waitDurationInOpenState</span>: <span class="st">10s</span>       <span class="cm"># stay OPEN for 10s</span>
+        <span class="an">permittedNumberOfCallsInHalfOpenState</span>: <span class="st">3</span>  <span class="cm"># trial calls</span>
+        <span class="an">automaticTransitionFromOpenToHalfOpenEnabled</span>: <span class="st">true</span>
+        <span class="an">slowCallDurationThreshold</span>: <span class="st">2s</span>      <span class="cm"># calls > 2s are "slow"</span>
+        <span class="an">slowCallRateThreshold</span>: <span class="st">60</span>          <span class="cm"># >60% slow -> OPEN</span>
+        <span class="an">recordExceptions</span>:
+          - <span class="st">java.io.IOException</span>
+          - <span class="st">java.util.concurrent.TimeoutException</span>
+          - <span class="st">feign.FeignException</span>
+        <span class="an">ignoreExceptions</span>:
+          - <span class="st">com.demo.exception.BusinessException</span>  <span class="cm"># don't trip CB on business errors</span>
+
+<span class="cm"># ── Expose actuator endpoints ──────────────────────────────────</span>
+<span class="an">management</span>:
+  <span class="an">endpoints</span>:
+    <span class="an">web</span>:
+      <span class="an">exposure</span>:
+        <span class="an">include</span>: <span class="st">health,circuitbreakers,circuitbreakerevents</span>
+  <span class="an">health</span>:
+    <span class="an">circuitbreakers</span>:
+      <span class="an">enabled</span>: <span class="st">true</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 4 — CB Config Bean
+════════════════════════════════════════════════ -->
+<div id="tab-config" class="panel">
+  <div class="code-section">
+    <div class="code-label">CircuitBreakerConfig.java — Event Listeners</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="an">@Configuration</span>
+<span class="kw">public class</span> <span class="tp">CircuitBreakerEventConfig</span> {
+
+    <span class="kw">private static final</span> <span class="tp">Logger</span> log =
+        <span class="tp">LoggerFactory</span>.<span class="nm">getLogger</span>(<span class="tp">CircuitBreakerEventConfig</span>.<span class="kw">class</span>);
+
+    <span class="cm">/**
+     * Registers state-change listeners on the CB registry.
+     * Fires when CB transitions: CLOSED -> OPEN -> HALF_OPEN -> CLOSED
+     */</span>
+    <span class="an">@Bean</span>
+    <span class="kw">public</span> <span class="tp">CircuitBreakerRegistry</span> <span class="nm">circuitBreakerRegistry</span>() {
+        <span class="tp">CircuitBreakerRegistry</span> registry = <span class="tp">CircuitBreakerRegistry</span>.<span class="nm">ofDefaults</span>();
+
+        registry.<span class="nm">getEventPublisher</span>()
+            .<span class="nm">onEntryAdded</span>(entry -> {
+                <span class="tp">CircuitBreaker</span> cb = entry.<span class="nm">getAddedEntry</span>();
+
+                <span class="cm">// Log every state transition</span>
+                cb.<span class="nm">getEventPublisher</span>()
+                    .<span class="nm">onStateTransition</span>(event ->
+                        log.<span class="nm">warn</span>(<span class="st">"CircuitBreaker [{}] state changed: {} -> {}"</span>,
+                            event.<span class="nm">getCircuitBreakerName</span>(),
+                            event.<span class="nm">getStateTransition</span>().<span class="nm">getFromState</span>(),
+                            event.<span class="nm">getStateTransition</span>().<span class="nm">getToState</span>()))
+
+                    .<span class="nm">onFailureRateExceeded</span>(event ->
+                        log.<span class="nm">error</span>(<span class="st">"CircuitBreaker [{}] failure rate: {}%"</span>,
+                            event.<span class="nm">getCircuitBreakerName</span>(),
+                            event.<span class="nm">getFailureRate</span>()))
+
+                    .<span class="nm">onCallNotPermitted</span>(event ->
+                        log.<span class="nm">warn</span>(<span class="st">"CircuitBreaker [{}] is OPEN — call rejected"</span>,
+                            event.<span class="nm">getCircuitBreakerName</span>()));
+            });
+
+        <span class="kw">return</span> registry;
+    }
+}</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 5 — Service Layer
+════════════════════════════════════════════════ -->
+<div id="tab-service" class="panel">
+  <div class="code-section">
+    <div class="code-label">OrderService.java — @CircuitBreaker with Fallback</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="an">@Service</span>
+<span class="kw">public class</span> <span class="tp">OrderService</span> {
+
+    <span class="kw">private static final</span> <span class="tp">Logger</span> log =
+        <span class="tp">LoggerFactory</span>.<span class="nm">getLogger</span>(<span class="tp">OrderService</span>.<span class="kw">class</span>);
+
+    <span class="an">@Autowired</span>
+    <span class="kw">private</span> <span class="tp">InventoryClient</span> inventoryClient;   <span class="cm">// Feign client</span>
+
+    <span class="an">@Autowired</span>
+    <span class="kw">private</span> <span class="tp">OrderRepository</span> orderRepository;
+
+
+    <span class="cm">// ── 1. Circuit Breaker wraps the Feign call ──────────────────</span>
+    <span class="an">@CircuitBreaker</span>(name = <span class="st">"inventoryCB"</span>, fallbackMethod = <span class="st">"fallbackInventory"</span>)
+    <span class="kw">public</span> <span class="tp">InventoryResponse</span> <span class="nm">checkInventory</span>(<span class="tp">String</span> productId) {
+        log.<span class="nm">info</span>(<span class="st">"Calling Inventory Service for productId={}"</span>, productId);
+        <span class="kw">return</span> inventoryClient.<span class="nm">getStock</span>(productId);  <span class="cm">// may throw FeignException</span>
+    }
+
+
+    <span class="cm">// ── 2. Fallback — same signature + Throwable as last param ────</span>
+    <span class="kw">public</span> <span class="tp">InventoryResponse</span> <span class="nm">fallbackInventory</span>(<span class="tp">String</span> productId, <span class="tp">Throwable</span> t) {
+        log.<span class="nm">warn</span>(<span class="st">"Fallback triggered for productId={}, reason={}"</span>,
+            productId, t.<span class="nm">getMessage</span>());
+
+        <span class="cm">// Return cached/default data instead of propagating the error</span>
+        <span class="kw">return</span> <span class="tp">InventoryResponse</span>.<span class="nm">builder</span>()
+            .<span class="nm">productId</span>(productId)
+            .<span class="nm">available</span>(<span class="kw">false</span>)
+            .<span class="nm">quantity</span>(<span class="st">0</span>)
+            .<span class="nm">message</span>(<span class="st">"Inventory service unavailable. Please retry shortly."</span>)
+            .<span class="nm">build</span>();
+    }
+
+
+    <span class="cm">// ── 3. Place order — uses CB-protected inventory check ────────</span>
+    <span class="kw">public</span> <span class="tp">OrderResponse</span> <span class="nm">placeOrder</span>(<span class="tp">OrderRequest</span> request) {
+        <span class="tp">InventoryResponse</span> inventory = <span class="nm">checkInventory</span>(request.<span class="nm">getProductId</span>());
+
+        <span class="kw">if</span> (!inventory.<span class="nm">isAvailable</span>()) {
+            <span class="kw">throw new</span> <span class="tp">BusinessException</span>(<span class="st">"Product out of stock: "</span> + request.<span class="nm">getProductId</span>());
+            <span class="cm">// BusinessException is in ignoreExceptions — won't trip the CB</span>
+        }
+
+        <span class="tp">Order</span> order = <span class="tp">Order</span>.<span class="nm">builder</span>()
+            .<span class="nm">orderId</span>(<span class="tp">UUID</span>.<span class="nm">randomUUID</span>().<span class="nm">toString</span>())
+            .<span class="nm">productId</span>(request.<span class="nm">getProductId</span>())
+            .<span class="nm">quantity</span>(request.<span class="nm">getQuantity</span>())
+            .<span class="nm">status</span>(<span class="st">"PLACED"</span>)
+            .<span class="nm">build</span>();
+
+        orderRepository.<span class="nm">save</span>(order);
+
+        <span class="kw">return</span> <span class="tp">OrderResponse</span>.<span class="nm">builder</span>()
+            .<span class="nm">orderId</span>(order.<span class="nm">getOrderId</span>())
+            .<span class="nm">status</span>(order.<span class="nm">getStatus</span>())
+            .<span class="nm">inventoryMessage</span>(inventory.<span class="nm">getMessage</span>())
+            .<span class="nm">build</span>();
+    }
+}</pre>
+    </div>
+  </div>
+
+  <div class="code-section">
+    <div class="code-label">InventoryResponse.java — DTO</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="an">@Data</span>
+<span class="an">@Builder</span>
+<span class="an">@NoArgsConstructor</span>
+<span class="an">@AllArgsConstructor</span>
+<span class="kw">public class</span> <span class="tp">InventoryResponse</span> {
+    <span class="kw">private</span> <span class="tp">String</span>  productId;
+    <span class="kw">private boolean</span> available;
+    <span class="kw">private int</span>     quantity;
+    <span class="kw">private</span> <span class="tp">String</span>  message;
+}</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 6 — Controller
+════════════════════════════════════════════════ -->
+<div id="tab-controller" class="panel">
+  <div class="code-section">
+    <div class="code-label">OrderController.java</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="an">@RestController</span>
+<span class="an">@RequestMapping</span>(<span class="st">"/orders"</span>)
+<span class="kw">public class</span> <span class="tp">OrderController</span> {
+
+    <span class="an">@Autowired</span>
+    <span class="kw">private</span> <span class="tp">OrderService</span> orderService;
+
+
+    <span class="cm">// POST /orders — place a new order</span>
+    <span class="an">@PostMapping</span>
+    <span class="kw">public</span> <span class="tp">ResponseEntity</span>&lt;<span class="tp">OrderResponse</span>&gt; <span class="nm">placeOrder</span>(
+            <span class="an">@RequestBody</span> <span class="tp">OrderRequest</span> request) {
+
+        <span class="tp">OrderResponse</span> response = orderService.<span class="nm">placeOrder</span>(request);
+        <span class="kw">return</span> <span class="tp">ResponseEntity</span>.<span class="nm">ok</span>(response);
+    }
+
+
+    <span class="cm">// GET /orders/inventory/{productId} — check stock directly</span>
+    <span class="an">@GetMapping</span>(<span class="st">"/inventory/{productId}"</span>)
+    <span class="kw">public</span> <span class="tp">ResponseEntity</span>&lt;<span class="tp">InventoryResponse</span>&gt; <span class="nm">checkInventory</span>(
+            <span class="an">@PathVariable</span> <span class="tp">String</span> productId) {
+
+        <span class="tp">InventoryResponse</span> response = orderService.<span class="nm">checkInventory</span>(productId);
+        <span class="kw">return</span> <span class="tp">ResponseEntity</span>.<span class="nm">ok</span>(response);
+    }
+
+
+    <span class="cm">// Global exception handler for BusinessException</span>
+    <span class="an">@ExceptionHandler</span>(<span class="tp">BusinessException</span>.<span class="kw">class</span>)
+    <span class="kw">public</span> <span class="tp">ResponseEntity</span>&lt;<span class="tp">String</span>&gt; <span class="nm">handleBusiness</span>(<span class="tp">BusinessException</span> ex) {
+        <span class="kw">return</span> <span class="tp">ResponseEntity</span>
+            .<span class="nm">status</span>(<span class="tp">HttpStatus</span>.UNPROCESSABLE_ENTITY)
+            .<span class="nm">body</span>(ex.<span class="nm">getMessage</span>());
+    }
+}</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 7 — Feign Client
+════════════════════════════════════════════════ -->
+<div id="tab-client" class="panel">
+  <div class="code-section">
+    <div class="code-label">InventoryClient.java — OpenFeign</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="cm">// @FeignClient makes HTTP calls look like local method calls</span>
+<span class="an">@FeignClient</span>(
+    name  = <span class="st">"inventory-service"</span>,
+    url   = <span class="st">"${inventory.service.url}"</span>   <span class="cm">// from application.yml</span>
+)
+<span class="kw">public interface</span> <span class="tp">InventoryClient</span> {
+
+    <span class="an">@GetMapping</span>(<span class="st">"/inventory/{productId}"</span>)
+    <span class="tp">InventoryResponse</span> <span class="nm">getStock</span>(<span class="an">@PathVariable</span>(<span class="st">"productId"</span>) <span class="tp">String</span> productId);
+}</pre>
+    </div>
+  </div>
+
+  <div class="code-section">
+    <div class="code-label">Main Application — Enable Feign</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="an">@SpringBootApplication</span>
+<span class="an">@EnableFeignClients</span>          <span class="cm">// scans for @FeignClient interfaces</span>
+<span class="kw">public class</span> <span class="tp">OrderServiceApplication</span> {
+    <span class="kw">public static void</span> <span class="nm">main</span>(<span class="tp">String</span>[] args) {
+        <span class="tp">SpringApplication</span>.<span class="nm">run</span>(<span class="tp">OrderServiceApplication</span>.<span class="kw">class</span>, args);
+    }
+}</pre>
+    </div>
+  </div>
+
+  <div class="code-section">
+    <div class="code-label">Test with curl</div>
+    <div class="code-box">
+      <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+<pre><span class="cm"># Place an order (triggers CB-protected inventory check)</span>
+curl -X POST http://localhost:8081/orders \
+  -H <span class="st">"Content-Type: application/json"</span> \
+  -d <span class="st">'{"productId":"PROD-101","quantity":2}'</span>
+
+<span class="cm"># Check CB state via Actuator</span>
+curl http://localhost:8081/actuator/circuitbreakers
+
+<span class="cm"># Check CB events (transitions, failures)</span>
+curl http://localhost:8081/actuator/circuitbreakerevents/inventoryCB</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     TAB 8 — Interview Notes
+════════════════════════════════════════════════ -->
+<div id="tab-keypoints" class="panel">
+  <table>
+    <tr>
+      <th>Concept</th>
+      <th>State</th>
+      <th>What to say in interview</th>
+    </tr>
+    <tr>
+      <td><strong>Three States</strong></td>
+      <td>
+        <span class="badge closed">CLOSED</span>
+        <span class="badge open">OPEN</span>
+        <span class="badge halfopen">HALF-OPEN</span>
+      </td>
+      <td>CLOSED = normal flow. OPEN = fail-fast, returns fallback immediately. HALF-OPEN = trial period, sends limited calls to test recovery.</td>
+    </tr>
+    <tr>
+      <td><strong>Why not try-catch?</strong></td>
+      <td><span class="badge closed">Design</span></td>
+      <td>try-catch still makes the failing call every time — hammering a down service. CB stops calling it altogether during OPEN, giving downstream time to recover.</td>
+    </tr>
+    <tr>
+      <td><strong>Fallback signature</strong></td>
+      <td><span class="badge halfopen">Rule</span></td>
+      <td>Must match the protected method's return type and parameters, plus one extra <code>Throwable</code> at the end. Resilience4j resolves it by name at startup.</td>
+    </tr>
+    <tr>
+      <td><strong>ignoreExceptions</strong></td>
+      <td><span class="badge closed">Config</span></td>
+      <td>Business exceptions (stock out, validation) should NOT trip the CB — only infrastructure failures (timeout, connection refused) should. Use <code>ignoreExceptions</code> for this.</td>
+    </tr>
+    <tr>
+      <td><strong>slidingWindowType</strong></td>
+      <td><span class="badge halfopen">Config</span></td>
+      <td>COUNT_BASED = last N calls. TIME_BASED = calls in last N seconds. COUNT_BASED is simpler to reason about in interviews.</td>
+    </tr>
+    <tr>
+      <td><strong>Slow call threshold</strong></td>
+      <td><span class="badge open">Config</span></td>
+      <td>CB can also open on slow calls, not just failures — crucial for latency-sensitive systems. A slow inventory call can back-pressure your whole order pipeline.</td>
+    </tr>
+    <tr>
+      <td><strong>Actuator endpoint</strong></td>
+      <td><span class="badge closed">Observability</span></td>
+      <td><code>/actuator/circuitbreakers</code> shows live state. <code>/actuator/circuitbreakerevents</code> shows full transition history — essential for production debugging.</td>
+    </tr>
+    <tr>
+      <td><strong>@CircuitBreaker vs programmatic</strong></td>
+      <td><span class="badge halfopen">Design</span></td>
+      <td>Annotation is cleaner for service methods. Programmatic API (<code>CircuitBreaker.decorateSupplier</code>) is better when you need fine-grained control or reactive pipelines.</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ── JS ── -->
+<script>
+function show(tab) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function copyBlock(btn) {
+  const pre = btn.nextElementSibling;
+  navigator.clipboard.writeText(pre.innerText).then(() => {
+    btn.textContent = 'copied!';
+    setTimeout(() => btn.textContent = 'copy', 1800);
+  });
+}
+
+function copyDiagram() {
+  const txt = `
+  +---------------------------------------------------------------------------------+
+  |                     CIRCUIT BREAKER PATTERN - MICROSERVICE                      |
+  +---------------------------------------------------------------------------------+
+
+  +-------------+       HTTP call        +----------------------------------------------+
+  |             |  ──────────────────>   |           CIRCUIT BREAKER                    |
+  |   Order     |                        |                                              |
+  |   Service   |                        |   @CircuitBreaker(name = "inventoryCB",      |
+  |  (Caller)   |                        |    fallbackMethod = "fallbackInventory")     |
+  |             |  <- - - - - - - - - -  |                                              |
+  +-------------+   fallback response    +----------------------------------------------+
+                                                          |
+                     +------------------------------------|------------------------------------+
+                     |                                    |                                    |
+               [ CLOSED ]                             [ OPEN ]                         [ HALF-OPEN ]
+                     |                                    |                                    |
+            Normal operation                 Trips after N% failures               Trial request sent
+            Calls go through                 Returns fallback instantly             to check recovery
+            Counts failures                   Waits waitDurationInOpen
+
+                     v                                   v                                    v
+        +------------------+                    +-----------------+              +---------------------+
+        |  Inventory       |                    |  Fallback       |              |  Inventory          |
+        |  Service         |                    |  Method         |              |  Service            |
+        |  (Downstream)    |                    |  (cached data / |              |  (Downstream)       |
+        |                  |                    |   default resp) |              |                     |
+        +------------------+                    +-----------------+              +---------------------+
+                                                                                 success -> CLOSED
+                                                                                 failure -> OPEN again
+
+
+  STATE TRANSITIONS:
+  ==================
+                                failure rate >= threshold
+           [ CLOSED ] ────────────────────────────────────────────> [ OPEN ]
+               ^                                                         |
+               |   success                             waitDuration      |
+          [ HALF-OPEN ] <─────────────────────────────────────────────── |
+               |
+               |   failure
+           [ OPEN ] <──────────────────────────────────────────────────────
+
+
+  CONFIGURATION (application.yml):
+  =================================
+  slidingWindowSize        = 10     # last N calls measured
+  failureRateThreshold     = 50     # 50% failures -> OPEN
+  waitDurationInOpenState  = 10s    # time before trying HALF-OPEN
+  permittedCallsInHalfOpen = 3      # trial calls in HALF-OPEN
+  slowCallDurationThreshold= 2s     # calls > 2s counted as slow
+  slowCallRateThreshold    = 60     # 60% slow calls -> OPEN
+`;
+  navigator.clipboard.writeText(txt).then(() => {
+    const el = document.getElementById('flash-diag');
+    el.textContent = 'Copied to clipboard!';
+    setTimeout(() => el.textContent = '', 2000);
+  });
+}
+</script>
+
+</body>
+</html>

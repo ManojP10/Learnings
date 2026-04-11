@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's everything in chat — full implementation, JDBC vs JPA vs Hibernate theory, annotations, and code.
+
+---
+
+## JDBC vs JPA vs Hibernate — How They Relate
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                      JDBC  vs  JPA  vs  HIBERNATE                                 |
+  +-----------------------------------------------------------------------------------+
+
+  YOUR CODE
+      |
+      v
+  +------------------+       +------------------+       +------------------+
+  |      JDBC        |       |      JPA          |       |   Hibernate      |
+  |  (Java Database  |       |  (Jakarta         |       |  (ORM Framework) |
+  |   Connectivity)  |       |   Persistence API)|       |                  |
+  +------------------+       +------------------+       +------------------+
+  | - Raw SQL         |      | - Just an         |       | - Implements JPA |
+  | - Manual mapping  |      |   INTERFACE /     |       | - Adds extras:   |
+  | - ResultSet rows  |      |   SPEC (no code)  |       |   caching, HQL,  |
+  | - You write all   |      | - Defines:        |       |   criteria API   |
+  |   boilerplate     |      |   @Entity         |       | - Most popular   |
+  |                   |      |   @Table          |       |   JPA provider   |
+  |                   |      |   EntityManager   |       |                  |
+  +------------------+       +------------------+       +------------------+
+          |                          |                          |
+          |                          |                          |
+          +-------------- uses ------+---------- uses ----------+
+                                     |
+                                     v
+                         +------------------+
+                         |   JDBC Driver    |
+                         | (talks to actual |
+                         |   database)      |
+                         +------------------+
+                                     |
+                                     v
+                         +------------------+
+                         |    DATABASE      |
+                         |  (MySQL/Postgres)|
+                         +------------------+
+
+
+  ANALOGY:
+  ========
+  JDBC       = driving a car manually (change gears, manage engine yourself)
+  JPA        = traffic rules / spec (defines HOW driving should work)
+  Hibernate  = automatic car that follows traffic rules (implements the spec)
+
+
+  WHAT EACH DOES:
+  ===============
+
+  JDBC:
+    Connection conn = DriverManager.getConnection(url, user, pass);
+    PreparedStatement ps = conn.prepareStatement("SELECT * FROM orders WHERE id=?");
+    ps.setString(1, orderId);
+    ResultSet rs = ps.executeQuery();
+    while (rs.next()) {
+        Order o = new Order();
+        o.setId(rs.getString("id"));         // YOU map every column manually
+        o.setStatus(rs.getString("status")); // YOU close every resource
+    }
+    rs.close(); ps.close(); conn.close();    // forget one --> connection leak
+
+
+  JPA (just an interface -- no actual implementation):
+    @Entity
+    public class Order { ... }              // annotate your class
+    entityManager.find(Order.class, id);    // JPA handles SQL + mapping
+
+
+  Hibernate (JPA implementation + extras):
+    orderRepository.findById(id);           // Spring Data wraps Hibernate
+    -- Hibernate generates SQL behind the scenes
+    -- maps ResultSet to Order object automatically
+    -- manages connections via HikariCP pool
+    -- first/second level caching
+    -- HQL, Criteria API, Named Queries
+
+
+  SPRING DATA JPA (top layer -- what you use in Spring Boot):
+  ============================================================
+
+  Spring Data JPA
+      |-- uses --> JPA (EntityManager)
+                      |-- implemented by --> Hibernate
+                                                |-- uses --> JDBC
+                                                                |-- talks to --> Database
+```
+
+---
+
+## Annotations — What & Why
+
+```
+  ANNOTATION              LEVEL          WHAT IT DOES
+  ────────────────────────────────────────────────────────────────────────────
+
+  @Entity                 Class          Marks class as a JPA-managed entity.
+                                         Hibernate creates/maps a DB table for it.
+                                         Without this, JPA ignores the class entirely.
+
+  @Table(name="orders")   Class          Specifies exact table name in DB.
+                                         If omitted, table name = class name.
+                                         Use when DB table name differs from class name.
+
+  @Id                     Field          Marks the primary key field.
+                                         Every @Entity must have exactly one @Id.
+
+  @GeneratedValue         Field          Tells JPA how to auto-generate the PK.
+    (strategy=            (on @Id)       IDENTITY  --> DB auto-increment (MySQL)
+     GenerationType.X)                   SEQUENCE  --> DB sequence (Postgres)
+                                         UUID      --> JVM generates UUID (Java 5+)
+                                         AUTO      --> JPA picks based on DB dialect
+
+  @Column(name="",        Field          Maps field to a specific column.
+    nullable=false,                      name       --> column name in DB
+    unique=true,                         nullable   --> adds NOT NULL constraint
+    length=255)                          unique     --> adds UNIQUE constraint
+                                         length     --> VARCHAR length
+
+  @Transient              Field          Field is NOT persisted to DB.
+                                         Useful for computed/derived values.
+
+  @Enumerated             Field          Maps Java enum to DB column.
+    (EnumType.STRING)                    STRING  --> stores "PLACED","CANCELLED"
+                                         ORDINAL --> stores 0, 1, 2 (fragile!)
+                                         Always prefer STRING.
+
+  @CreatedDate            Field          Auto-populates with creation timestamp.
+  @LastModifiedDate       Field          Auto-updates on every save.
+                                         Needs @EnableJpaAuditing on config class
+                                         and @EntityListeners(AuditingEntityListener)
+
+  @ManyToOne              Field          Many orders belong to one customer.
+  @OneToMany              Field          One customer has many orders.
+  @OneToOne               Field          One order has one shipment.
+  @ManyToMany             Field          Many orders have many products.
+
+  @JoinColumn             Field          Specifies the FK column name.
+    (name="customer_id")                 Used with @ManyToOne / @OneToOne.
+
+  @JoinTable              Field          Specifies the join table for @ManyToMany.
+
+  @FetchType.LAZY         Relation       Loads related entity ONLY when accessed.
+                                         Default for @OneToMany / @ManyToMany.
+                                         Prevents N+1 problem if used with JOIN FETCH.
+
+  @FetchType.EAGER        Relation       Loads related entity immediately with parent.
+                                         Default for @ManyToOne / @OneToOne.
+                                         Use carefully -- can load too much data.
+
+  @Cascade                Relation       Propagates operations to child entities.
+    (CascadeType.ALL)                    ALL     --> save/update/delete cascade
+                                         PERSIST --> cascade only on save
+                                         MERGE   --> cascade only on update
+                                         REMOVE  --> cascade only on delete
+
+  @Query                  Repository     Custom JPQL or native SQL on a repo method.
+    (value="",            Method         nativeQuery=true --> raw SQL
+     nativeQuery=false)                  nativeQuery=false -> JPQL (default)
+
+  @Modifying              Repository     Required with @Query for UPDATE/DELETE.
+                          Method         Without this, Hibernate throws exception.
+
+  @Transactional          Method/Class   Wraps method in a DB transaction.
+                                         Commits on success, rolls back on exception.
+                                         readOnly=true --> optimization for SELECT only.
+
+  @NamedQuery             Class          Pre-defined JPQL query at entity level.
+                                         Validated at startup -- catches typos early.
+
+  @Embeddable             Class          Marks a class whose fields are embedded
+  @Embedded               Field          into the parent table (no separate table).
+                                         Example: Address embedded inside Customer.
+
+  @Version                Field          Enables optimistic locking.
+                                         Hibernate checks version on update --
+                                         throws OptimisticLockException if stale.
+```
+
+---
+
+## Project Structure
+
+```
+order-service/
+ src/main/java/com/demo/
+  |-- OrderServiceApplication.java
+  |-- entity/
+  |     Order.java
+  |     Customer.java
+  |     Product.java
+  |     Address.java         (Embeddable)
+  |-- repository/
+  |     OrderRepository.java
+  |     CustomerRepository.java
+  |-- service/
+  |     OrderService.java
+  |-- dto/
+  |     OrderRequest.java
+  |     OrderResponse.java
+  |-- config/
+        JpaConfig.java
+ src/main/resources/
+      application.yml
+```
+
+---
+
+## pom.xml
+
+```xml
+<dependencies>
+
+    <!-- Spring Data JPA (includes Hibernate) -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+
+    <!-- Spring Web -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- PostgreSQL driver (swap for mysql-connector-j for MySQL) -->
+    <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+
+    <!-- H2 for local dev / tests -->
+    <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+
+</dependencies>
+```
+
+---
+
+## application.yml
+
+```yaml
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/orderdb
+    username: postgres
+    password: secret
+    driver-class-name: org.postgresql.Driver
+
+    # HikariCP connection pool (Hibernate uses this to get connections)
+    hikari:
+      pool-name: OrderHikariPool
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 30000     # ms to wait for a connection from pool
+      idle-timeout: 600000          # ms before idle connection is removed
+      max-lifetime: 1800000         # ms max connection lifetime
+
+  jpa:
+    hibernate:
+      ddl-auto: update              # create / create-drop / update / validate / none
+    show-sql: true                  # print generated SQL to console
+    properties:
+      hibernate:
+        format_sql: true            # pretty-print SQL
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        default_batch_fetch_size: 10   # batch lazy loads to avoid N+1
+        jdbc:
+          batch_size: 20            # batch inserts/updates
+        order_inserts: true         # group batched inserts by entity type
+        order_updates: true
+
+# H2 console for local dev (remove in prod)
+  h2:
+    console:
+      enabled: true
+```
+
+---
+
+## Address.java — @Embeddable
+
+```java
+// No separate table -- Address columns live inside Customer table
+@Embeddable
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Address {
+
+    @Column(name = "street", length = 200)
+    private String street;
+
+    @Column(name = "city", length = 100)
+    private String city;
+
+    @Column(name = "pincode", length = 10)
+    private String pincode;
+
+    @Column(name = "country", length = 50)
+    private String country;
+}
+```
+
+---
+
+## Customer.java
+
+```java
+@Entity
+@Table(name = "customers")
+@EntityListeners(AuditingEntityListener.class)   // enables @CreatedDate etc.
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Customer {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "name", nullable = false, length = 100)
+    private String name;
+
+    @Column(name = "email", nullable = false, unique = true)
+    private String email;
+
+    // Address fields embedded directly into customers table
+    // Columns: street, city, pincode, country
+    @Embedded
+    private Address address;
+
+    // One customer has many orders
+    // mappedBy = field name in Order that owns the FK
+    // CascadeType.ALL = save/delete customer cascades to orders
+    // orphanRemoval = deleting order from list also deletes from DB
+    @OneToMany(mappedBy = "customer",
+               cascade = CascadeType.ALL,
+               fetch = FetchType.LAZY,
+               orphanRemoval = true)
+    private List<Order> orders = new ArrayList<>();
+
+    @CreatedDate
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+
+    // Version field -- optimistic locking
+    // If two threads update same customer, second one gets OptimisticLockException
+    @Version
+    private Long version;
+}
+```
+
+---
+
+## Product.java
+
+```java
+@Entity
+@Table(name = "products")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Product {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "name", nullable = false)
+    private String name;
+
+    @Column(name = "price", nullable = false)
+    private Double price;
+
+    @Column(name = "stock_quantity")
+    private Integer stockQuantity;
+
+    // Many orders <--> Many products (join table: order_products)
+    @ManyToMany(mappedBy = "products", fetch = FetchType.LAZY)
+    private List<Order> orders = new ArrayList<>();
+}
+```
+
+---
+
+## Order.java — Main Entity
+
+```java
+@Entity
+@Table(name = "orders", indexes = {
+    @Index(name = "idx_order_status", columnList = "status"),
+    @Index(name = "idx_order_customer", columnList = "customer_id")
+})
+@EntityListeners(AuditingEntityListener.class)
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+// Named query -- JPQL validated at startup (catches typos before runtime)
+@NamedQuery(
+    name  = "Order.findByCustomerAndStatus",
+    query = "SELECT o FROM Order o WHERE o.customer.id = :customerId AND o.status = :status"
+)
+public class Order {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)   // JVM generates UUID, no DB sequence needed
+    private String id;
+
+    // Enum stored as STRING ("PLACED") not ORDINAL (0) -- safe for reordering
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false)
+    private OrderStatus status;
+
+    @Column(name = "total_amount", nullable = false)
+    private Double totalAmount;
+
+    // Many orders --> one customer
+    // @JoinColumn: FK column in orders table is "customer_id"
+    // FetchType.LAZY: customer NOT loaded unless you call order.getCustomer()
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "customer_id", nullable = false)
+    private Customer customer;
+
+    // Many orders <--> Many products
+    // @JoinTable: Hibernate creates "order_products" table with order_id + product_id
+    @ManyToMany(fetch = FetchType.LAZY, cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    @JoinTable(
+        name               = "order_products",
+        joinColumns        = @JoinColumn(name = "order_id"),
+        inverseJoinColumns = @JoinColumn(name = "product_id")
+    )
+    private List<Product> products = new ArrayList<>();
+
+    @Column(name = "notes", length = 500)
+    private String notes;
+
+    // Not stored in DB -- computed on the fly
+    @Transient
+    private String displayLabel;
+
+    @CreatedDate
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+
+    @Version
+    private Long version;
+
+    public enum OrderStatus {
+        PLACED, CONFIRMED, SHIPPED, DELIVERED, CANCELLED
+    }
+}
+```
+
+---
+
+## OrderRepository.java
+
+```java
+@Repository
+public interface OrderRepository extends JpaRepository<Order, String> {
+
+    // ── 1. Derived query -- Spring Data generates SQL from method name ──
+    List<Order> findByStatus(Order.OrderStatus status);
+
+    List<Order> findByCustomerIdAndStatus(Long customerId, Order.OrderStatus status);
+
+    Optional<Order> findByIdAndCustomerId(String orderId, Long customerId);
+
+    // ── 2. JPQL query -- object-oriented, DB-agnostic ─────────────────
+    @Query("SELECT o FROM Order o WHERE o.totalAmount > :amount ORDER BY o.createdAt DESC")
+    List<Order> findHighValueOrders(@Param("amount") Double amount);
+
+    // ── 3. JPQL with JOIN FETCH -- solves N+1 problem ─────────────────
+    // Without JOIN FETCH: loading 10 orders = 1 query for orders
+    //                     + 10 queries for each customer = 11 queries (N+1)
+    // With JOIN FETCH:    1 single query with JOIN, loads all together
+    @Query("SELECT o FROM Order o JOIN FETCH o.customer WHERE o.status = :status")
+    List<Order> findByStatusWithCustomer(@Param("status") Order.OrderStatus status);
+
+    // ── 4. Native SQL -- when JPQL can't express it ────────────────────
+    @Query(
+        value        = "SELECT * FROM orders WHERE DATE(created_at) = CURRENT_DATE",
+        nativeQuery  = true
+    )
+    List<Order> findTodaysOrders();
+
+    // ── 5. @Modifying -- required for UPDATE / DELETE queries ──────────
+    @Modifying
+    @Transactional
+    @Query("UPDATE Order o SET o.status = :status WHERE o.id = :id")
+    int updateOrderStatus(@Param("id") String id, @Param("status") Order.OrderStatus status);
+
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM Order o WHERE o.status = :status AND o.createdAt < :before")
+    int deleteOldCancelledOrders(
+        @Param("status") Order.OrderStatus status,
+        @Param("before") LocalDateTime before);
+
+    // ── 6. Named query (defined on entity with @NamedQuery) ────────────
+    List<Order> findByCustomerAndStatus(
+        @Param("customerId") Long customerId,
+        @Param("status")     Order.OrderStatus status);
+
+    // ── 7. Pagination ──────────────────────────────────────────────────
+    Page<Order> findByCustomerId(Long customerId, Pageable pageable);
+}
+```
+
+---
+
+## CustomerRepository.java
+
+```java
+@Repository
+public interface CustomerRepository extends JpaRepository<Customer, Long> {
+
+    Optional<Customer> findByEmail(String email);
+
+    boolean existsByEmail(String email);
+
+    // Fetch customer WITH orders in one query (no N+1)
+    @Query("SELECT c FROM Customer c JOIN FETCH c.orders WHERE c.id = :id")
+    Optional<Customer> findByIdWithOrders(@Param("id") Long id);
+}
+```
+
+---
+
+## JpaConfig.java
+
+```java
+@Configuration
+@EnableJpaAuditing     // activates @CreatedDate and @LastModifiedDate
+public class JpaConfig {
+
+    // Auditor bean -- who made the change (for @CreatedBy / @ModifiedBy)
+    @Bean
+    public AuditorAware<String> auditorProvider() {
+        // In real app: pull from SecurityContext (logged-in user)
+        return () -> Optional.of("system");
+    }
+}
+```
+
+---
+
+## OrderService.java
+
+```java
+@Service
+@Transactional          // all methods transactional by default
+public class OrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
+    @Autowired private OrderRepository    orderRepository;
+    @Autowired private CustomerRepository customerRepository;
+
+
+    // ── Create order ───────────────────────────────────────────────────
+    public Order createOrder(Long customerId, Double amount, List<Product> products) {
+        Customer customer = customerRepository.findById(customerId)
+            .orElseThrow(() -> new RuntimeException("Customer not found: " + customerId));
+
+        Order order = Order.builder()
+            .status(Order.OrderStatus.PLACED)
+            .totalAmount(amount)
+            .customer(customer)        // sets FK customer_id
+            .products(products)        // populates order_products join table
+            .build();
+
+        return orderRepository.save(order);
+        // Hibernate: INSERT INTO orders(...) + INSERT INTO order_products(...)
+    }
+
+
+    // ── Read: single order ─────────────────────────────────────────────
+    @Transactional(readOnly = true)    // optimization: no dirty checking, no flush
+    public Order getOrder(String orderId) {
+        return orderRepository.findById(orderId)
+            .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
+    }
+
+
+    // ── Read: orders with JOIN FETCH (no N+1) ─────────────────────────
+    @Transactional(readOnly = true)
+    public List<Order> getConfirmedOrdersWithCustomer() {
+        return orderRepository.findByStatusWithCustomer(Order.OrderStatus.CONFIRMED);
+        // Single SQL: SELECT o.*, c.* FROM orders o JOIN customers c ON o.customer_id = c.id
+        //             WHERE o.status = 'CONFIRMED'
+    }
+
+
+    // ── Read: paginated ────────────────────────────────────────────────
+    @Transactional(readOnly = true)
+    public Page<Order> getCustomerOrders(Long customerId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+        return orderRepository.findByCustomerId(customerId, pageable);
+    }
+
+
+    // ── Update status ──────────────────────────────────────────────────
+    public void updateStatus(String orderId, Order.OrderStatus newStatus) {
+        int updated = orderRepository.updateOrderStatus(orderId, newStatus);
+        if (updated == 0) throw new RuntimeException("Order not found: " + orderId);
+    }
+
+
+    // ── Update via dirty checking (no explicit save needed) ────────────
+    public Order updateNotes(String orderId, String notes) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new RuntimeException("Order not found"));
+
+        order.setNotes(notes);
+        // NO orderRepository.save() needed!
+        // Hibernate tracks changes to managed entities inside a transaction.
+        // On commit, it detects the change and fires UPDATE automatically.
+        // This is called "dirty checking".
+
+        return order;
+    }
+
+
+    // ── Delete ─────────────────────────────────────────────────────────
+    public void deleteOrder(String orderId) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new RuntimeException("Order not found"));
+        orderRepository.delete(order);
+        // CascadeType.PERSIST/MERGE on products: join table rows deleted too
+    }
+
+
+    // ── Batch cleanup ──────────────────────────────────────────────────
+    public int cleanupOldCancelledOrders() {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(30);
+        return orderRepository.deleteOldCancelledOrders(Order.OrderStatus.CANCELLED, cutoff);
+    }
+
+
+    // ── Optimistic locking demo ────────────────────────────────────────
+    // Thread-1 loads order (version=1), Thread-2 loads order (version=1)
+    // Thread-1 saves --> version becomes 2
+    // Thread-2 tries to save --> Hibernate sees version=1 != 2 --> throws
+    // OptimisticLockException --> no silent data overwrite
+    public Order confirmOrder(String orderId) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new RuntimeException("Order not found"));
+
+        if (order.getStatus() != Order.OrderStatus.PLACED) {
+            throw new RuntimeException("Only PLACED orders can be confirmed");
+        }
+        order.setStatus(Order.OrderStatus.CONFIRMED);
+        return orderRepository.save(order);
+        // Hibernate: UPDATE orders SET status='CONFIRMED', version=2
+        //            WHERE id=? AND version=1   <-- version check in WHERE clause
+    }
+}
+```
+
+---
+
+## OrderController.java
+
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    @Autowired private OrderService orderService;
+
+    @PostMapping
+    public ResponseEntity<Order> create(@RequestBody OrderRequest req) {
+        Order order = orderService.createOrder(req.getCustomerId(), req.getAmount(), List.of());
+        return ResponseEntity.status(HttpStatus.CREATED).body(order);
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<Order> get(@PathVariable String id) {
+        return ResponseEntity.ok(orderService.getOrder(id));
+    }
+
+    @GetMapping("/customer/{customerId}")
+    public ResponseEntity<Page<Order>> getByCustomer(
+            @PathVariable Long customerId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        return ResponseEntity.ok(orderService.getCustomerOrders(customerId, page, size));
+    }
+
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<Void> updateStatus(
+            @PathVariable String id,
+            @RequestParam Order.OrderStatus status) {
+        orderService.updateStatus(id, status);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/confirm")
+    public ResponseEntity<Order> confirm(@PathVariable String id) {
+        return ResponseEntity.ok(orderService.confirmOrder(id));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable String id) {
+        orderService.deleteOrder(id);
+        return ResponseEntity.noContent().build();
+    }
+}
+```
+
+---
+
+## Hibernate Lifecycle — Entity States
+
+```
+  ENTITY STATES IN HIBERNATE:
+  ============================
+
+  new Order()                    --> TRANSIENT
+      |                              (not known to Hibernate, not in DB)
+      |
+      | entityManager.persist()
+      | orderRepository.save()
+      v
+  [PERSISTENT / MANAGED]         --> tracked by Hibernate
+      |                              changes auto-detected (dirty checking)
+      |                              SELECT / INSERT / UPDATE fired on flush
+      |
+      | entityManager.detach()
+      | session closes
+      v
+  [DETACHED]                     --> was managed, now disconnected
+      |                              changes NOT tracked
+      |                              need merge() to re-attach
+      |
+      | entityManager.merge()
+      v
+  [PERSISTENT again]
+
+      | entityManager.remove()
+      | orderRepository.delete()
+      v
+  [REMOVED]                      --> scheduled for DELETE on flush/commit
+
+
+  DIRTY CHECKING:
+  ===============
+  Hibernate takes a snapshot of entity state when loaded.
+  On transaction commit, it compares current state vs snapshot.
+  If different --> fires UPDATE automatically.
+  This is why you don't need to call save() after changing a managed entity.
+
+
+  N+1 PROBLEM:
+  =============
+  List<Order> orders = orderRepository.findAll();  // 1 query: SELECT * FROM orders
+
+  for (Order o : orders) {
+      System.out.println(o.getCustomer().getName()); // N queries: SELECT * FROM customers WHERE id=?
+  }                                                  // 10 orders = 11 total queries  <-- BAD
+
+  FIX: Use JOIN FETCH in @Query
+  @Query("SELECT o FROM Order o JOIN FETCH o.customer")
+  -- Single query: SELECT o.*, c.* FROM orders o JOIN customers c ON ...  <-- GOOD
+```
+
+---
+
+## Interview Key Points
+
+| Topic | What to say |
+|---|---|
+| JDBC vs JPA vs Hibernate | JDBC = raw SQL + manual mapping. JPA = specification (interface only). Hibernate = JPA implementation. Spring Data JPA wraps Hibernate with repositories |
+| `ddl-auto` values | `create` drops+recreates on startup. `update` alters existing. `validate` checks schema matches entities. `none` does nothing. Use `validate` or `none` in production |
+| Dirty checking | Hibernate snapshots entity on load. On commit, compares and fires UPDATE if changed. No need to call `save()` on managed entities |
+| N+1 problem | Loading N orders then accessing `.getCustomer()` in a loop fires N extra queries. Fix with `JOIN FETCH` in `@Query` or `@EntityGraph` |
+| `@Transactional(readOnly=true)` | Tells Hibernate to skip dirty checking and flush — faster for SELECT-only methods |
+| Optimistic vs Pessimistic locking | `@Version` = optimistic (no DB lock, detects conflict on save). `@Lock(PESSIMISTIC_WRITE)` = DB-level lock (SELECT FOR UPDATE) |
+| `@Enumerated(EnumType.STRING)` | Always use STRING not ORDINAL — ORDINAL breaks if you reorder enum values |
+| `FetchType.LAZY` default | Always default to LAZY. Switch to EAGER or JOIN FETCH only when you know you'll always need the related data |
+| `orphanRemoval = true` | Removing an Order from `customer.getOrders()` list auto-deletes that Order from DB |
+| `@Embeddable` vs `@OneToOne` | `@Embeddable` puts fields in same table (no join needed). `@OneToOne` creates a separate table with a FK |
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

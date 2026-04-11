@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's everything in chat — full implementation, annotations, virtual threads, and theory.
+
+---
+
+## ASCII Block Diagram
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                    MULTITHREADING IN SPRING BOOT MICROSERVICE                     |
+  +-----------------------------------------------------------------------------------+
+
+  REST Client
+      |
+      | POST /orders/bulk  (list of 100 orders)
+      v
+  +------------------+
+  |  OrderController |
+  +------------------+
+      |
+      | calls
+      v
+  +-----------------------------------------------------------------------+
+  |                        OrderService                                   |
+  |                                                                       |
+  |   bulkProcess(orders)                                                 |
+  |       |                                                               |
+  |       | splits into chunks, submits to thread pool                    |
+  |       v                                                               |
+  |   +------------------+  submit()  +-----------------------------+     |
+  |   |  @Async method   | ---------> |   TaskExecutor              |     |
+  |   |  processOrder()  |            |   (ThreadPoolTaskExecutor)  |     |
+  |   +------------------+            |                             |     |
+  |                                   |  corePoolSize     =  5      |     |
+  |   CompletableFuture.allOf()       |  maxPoolSize      = 10      |     |
+  |   waits for ALL futures           |  queueCapacity    = 25      |     |
+  |                                   |  threadNamePrefix = order-  |     |
+  |                                   +-----------------------------+     |
+  |                                          |       |       |            |
+  |                                        [T1]    [T2]    [T3]  ...      |
+  |                                          |       |       |            |
+  +-----------------------------------------------------------------------+
+                                             |       |       |
+                                             v       v       v
+                                     +-------------------------+
+                                     |   Inventory Service     |
+                                     |   (Downstream calls)    |
+                                     |   each in own thread    |
+                                     +-------------------------+
+
+  THREAD SAFETY FLOW:
+  ===================
+
+  Thread-1 ---+
+              |
+  Thread-2 ---+---> [synchronized / ReentrantLock] ---> shared resource (counter, map)
+              |
+  Thread-3 ---+
+
+  @Async:       method runs in separate thread from pool, caller gets back immediately
+  @Scheduled:   runs in its own thread on a cron/fixed schedule
+  synchronized: only one thread enters the block at a time (intrinsic lock)
+  ReentrantLock: same as synchronized but with tryLock(), timeout, fairness
+  AtomicInteger: lock-free thread-safe counter using CAS (Compare-And-Swap)
+  ConcurrentHashMap: thread-safe map, segment-level locking (no full map lock)
+```
+
+---
+
+## Theory — Classes from Basic to Latest
+
+```
+  EVOLUTION OF MULTITHREADING IN JAVA:
+  =====================================
+
+  [Java 1.0]  Thread, Runnable
+      |         Raw threads. You manage lifecycle manually.
+      |         new Thread(() -> doWork()).start();
+      |
+  [Java 5]    ExecutorService, ThreadPoolExecutor, Future, Callable
+      |         Thread pools. Submit tasks, get Future back.
+      |         Executors.newFixedThreadPool(5).submit(task);
+      |
+  [Java 5]    synchronized, volatile, AtomicInteger, AtomicLong
+      |         Built-in synchronization primitives.
+      |         AtomicInteger uses CAS (Compare-And-Swap) - no locks.
+      |
+  [Java 5]    ReentrantLock, ReadWriteLock, Condition
+      |         More powerful than synchronized.
+      |         tryLock(), lockInterruptibly(), fair mode.
+      |
+  [Java 5]    CountDownLatch, CyclicBarrier, Semaphore, Exchanger
+      |         Coordination utilities.
+      |         Latch: wait for N events. Barrier: wait for N threads.
+      |
+  [Java 5]    ConcurrentHashMap, CopyOnWriteArrayList, BlockingQueue
+      |         Thread-safe collections. No external sync needed.
+      |
+  [Java 7]    ForkJoinPool, RecursiveTask, RecursiveAction
+      |         Divide-and-conquer parallelism.
+      |         Work-stealing: idle threads steal tasks from busy ones.
+      |
+  [Java 8]    CompletableFuture
+      |         Async pipelines. thenApply(), thenCompose(), allOf().
+      |         Non-blocking chaining of async operations.
+      |
+  [Java 9]    Flow API (Reactive Streams)
+      |         Publisher/Subscriber model. Backpressure support.
+      |
+  [Java 19+]  Virtual Threads (Project Loom) -- Preview
+  [Java 21]   Virtual Threads -- GA (General Availability)
+              Lightweight threads managed by JVM, not OS.
+              Millions of virtual threads possible.
+              Thread.ofVirtual().start(() -> doWork());
+              Executors.newVirtualThreadPerTaskExecutor();
+```
+
+---
+
+## Annotation Explanation
+
+```
+  ANNOTATION          WHERE USED           WHAT IT DOES
+  ──────────────────────────────────────────────────────────────────────
+
+  @Async              Method level         Runs method in a separate thread from
+                                           the configured TaskExecutor pool.
+                                           Caller returns immediately.
+                                           Must enable with @EnableAsync.
+                                           Return type: void or CompletableFuture<T>
+
+  @EnableAsync        @Configuration       Tells Spring to scan for @Async methods
+                      class                and proxy them to run asynchronously.
+                                           Without this, @Async does nothing.
+
+  @Scheduled          Method level         Runs method on a schedule (cron / fixed
+                                           rate / fixed delay). Runs in its own
+                                           thread. Must enable with @EnableScheduling.
+
+  @EnableScheduling   @Configuration       Activates the scheduling infrastructure.
+                      class
+
+  @Transactional      Method / Class       Each thread should have its own
+                                           transaction. Not directly a threading
+                                           annotation but critical: @Async +
+                                           @Transactional needs careful design
+                                           because async methods run in new thread
+                                           = new transaction context.
+
+  synchronized        Method / Block       Java keyword (not annotation).
+                                           Acquires intrinsic lock on object.
+                                           Only one thread executes at a time.
+                                           Simple but: no timeout, no tryLock.
+
+  @GuardedBy          Field / Method       Documentation annotation (from
+                      (JSR-305)            Guava/FindBugs). States which lock
+                                           guards this field. Not enforced
+                                           by JVM — used by static analysis tools.
+```
+
+---
+
+## pom.xml
+
+```xml
+<dependencies>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- For @Async, ThreadPoolTaskExecutor -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+
+</dependencies>
+```
+
+---
+
+## application.yml
+
+```yaml
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+
+# Custom thread pool properties (read in AsyncConfig)
+app:
+  async:
+    core-pool-size: 5
+    max-pool-size: 10
+    queue-capacity: 25
+    thread-name-prefix: order-async-
+```
+
+---
+
+## AsyncConfig.java — Thread Pool Setup
+
+```java
+@Configuration
+@EnableAsync          // activates @Async support across the application
+@EnableScheduling     // activates @Scheduled support
+public class AsyncConfig implements AsyncConfigurer {
+
+    @Value("${app.async.core-pool-size:5}")
+    private int corePoolSize;
+
+    @Value("${app.async.max-pool-size:10}")
+    private int maxPoolSize;
+
+    @Value("${app.async.queue-capacity:25}")
+    private int queueCapacity;
+
+    @Value("${app.async.thread-name-prefix:async-}")
+    private String threadNamePrefix;
+
+
+    // ── Primary async executor (used by @Async by default) ───────────
+    @Override
+    @Bean(name = "taskExecutor")
+    public Executor getAsyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+
+        executor.setCorePoolSize(corePoolSize);     // always-alive threads
+        executor.setMaxPoolSize(maxPoolSize);        // max threads under load
+        executor.setQueueCapacity(queueCapacity);    // tasks queued before new thread spawned
+        executor.setThreadNamePrefix(threadNamePrefix);
+
+        // CALLER_RUNS: if pool is full, calling thread runs the task itself
+        // Prevents task rejection under heavy load
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+
+        executor.setWaitForTasksToCompleteOnShutdown(true);  // graceful shutdown
+        executor.setAwaitTerminationSeconds(30);
+
+        executor.initialize();
+        return executor;
+    }
+
+
+    // ── Secondary executor for IO-heavy tasks (larger pool) ──────────
+    @Bean(name = "ioExecutor")
+    public Executor ioExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(50);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("io-async-");
+        executor.initialize();
+        return executor;
+    }
+
+
+    // ── Global async exception handler ───────────────────────────────
+    @Override
+    public AsyncUncaughtExceptionHandler getAsyncUncaughtExceptionHandler() {
+        return (throwable, method, params) -> {
+            System.err.println("Async error in method: " + method.getName()
+                + " | cause: " + throwable.getMessage());
+            // plug in Sentry / PagerDuty alert here
+        };
+    }
+}
+```
+
+---
+
+## OrderRequest.java / OrderResponse.java
+
+```java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderRequest {
+    private String orderId;
+    private String productId;
+    private int    quantity;
+}
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderResponse {
+    private String orderId;
+    private String status;
+    private String processedBy;   // which thread handled this
+}
+```
+
+---
+
+## OrderService.java — Core Multithreading
+
+```java
+@Service
+public class OrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
+    // ── Thread-safe shared state ──────────────────────────────────────
+    private final AtomicInteger          processedCount = new AtomicInteger(0);
+    private final ConcurrentHashMap<String, String> orderStatusMap = new ConcurrentHashMap<>();
+    private final ReentrantLock          reportLock     = new ReentrantLock();
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 1. @Async — fire and forget (void return)
+    //    Caller returns immediately, method runs in thread pool
+    // ════════════════════════════════════════════════════════════════
+    @Async("taskExecutor")
+    public void sendNotificationAsync(String orderId) {
+        log.info("[{}] Sending notification for order={}",
+            Thread.currentThread().getName(), orderId);
+
+        // simulate network call
+        try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        log.info("Notification sent for order={}", orderId);
+    }
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 2. @Async with CompletableFuture — async with result
+    //    Caller can .get() or chain with .thenApply() etc.
+    // ════════════════════════════════════════════════════════════════
+    @Async("taskExecutor")
+    public CompletableFuture<OrderResponse> processOrderAsync(OrderRequest request) {
+        log.info("[{}] Processing orderId={}", Thread.currentThread().getName(), request.getOrderId());
+
+        try {
+            Thread.sleep(200); // simulate DB write
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return CompletableFuture.failedFuture(e);
+        }
+
+        // thread-safe counter increment
+        int count = processedCount.incrementAndGet();
+        log.info("Total processed so far: {}", count);
+
+        // thread-safe map update
+        orderStatusMap.put(request.getOrderId(), "PROCESSED");
+
+        OrderResponse response = OrderResponse.builder()
+            .orderId(request.getOrderId())
+            .status("PROCESSED")
+            .processedBy(Thread.currentThread().getName())
+            .build();
+
+        return CompletableFuture.completedFuture(response);
+    }
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 3. Bulk processing — CompletableFuture.allOf()
+    //    Submits all orders concurrently, waits for ALL to complete
+    // ════════════════════════════════════════════════════════════════
+    public List<OrderResponse> processBulkOrders(List<OrderRequest> orders) {
+        log.info("Submitting {} orders for parallel processing", orders.size());
+
+        // Submit all tasks concurrently
+        List<CompletableFuture<OrderResponse>> futures = orders.stream()
+            .map(this::processOrderAsync)
+            .collect(Collectors.toList());
+
+        // Wait for ALL futures to complete
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // Collect results
+        return futures.stream()
+            .map(CompletableFuture::join)
+            .collect(Collectors.toList());
+    }
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 4. synchronized method — only one thread at a time
+    // ════════════════════════════════════════════════════════════════
+    public synchronized void generateReport() {
+        // intrinsic lock on 'this' object
+        // if thread-1 is here, thread-2 blocks until thread-1 exits
+        log.info("[{}] Generating report...", Thread.currentThread().getName());
+        // ... report logic
+    }
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 5. ReentrantLock — more control than synchronized
+    //    tryLock() prevents indefinite blocking
+    // ════════════════════════════════════════════════════════════════
+    public void generateReportWithLock() {
+        boolean locked = false;
+        try {
+            // try to acquire lock; give up after 2 seconds (no deadlock risk)
+            locked = reportLock.tryLock(2, TimeUnit.SECONDS);
+            if (!locked) {
+                log.warn("Could not acquire report lock — skipping this cycle");
+                return;
+            }
+            log.info("[{}] Generating report with lock...", Thread.currentThread().getName());
+            // ... report logic
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (locked) reportLock.unlock();  // ALWAYS unlock in finally
+        }
+    }
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 6. CountDownLatch — wait for N tasks before proceeding
+    // ════════════════════════════════════════════════════════════════
+    public void processWithLatch(List<OrderRequest> orders) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(orders.size());
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+
+        for (OrderRequest order : orders) {
+            pool.submit(() -> {
+                try {
+                    log.info("Processing {}", order.getOrderId());
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    latch.countDown();  // signal this task is done
+                }
+            });
+        }
+
+        latch.await();  // main thread waits here until count reaches 0
+        log.info("All {} orders processed via latch", orders.size());
+        pool.shutdown();
+    }
+
+
+    // ════════════════════════════════════════════════════════════════
+    // 7. @Scheduled — background periodic task
+    // ════════════════════════════════════════════════════════════════
+    @Scheduled(fixedDelay = 60000)   // runs 60s after previous run ends
+    public void cleanupStaleOrders() {
+        log.info("[{}] Running scheduled cleanup...", Thread.currentThread().getName());
+        orderStatusMap.entrySet().removeIf(e -> e.getValue().equals("EXPIRED"));
+    }
+
+    @Scheduled(cron = "0 0 2 * * *")  // runs at 2:00 AM every day
+    public void dailyReport() {
+        log.info("Running daily report...");
+        generateReportWithLock();
+    }
+
+
+    // ── Getters for controller ────────────────────────────────────────
+    public int getProcessedCount() { return processedCount.get(); }
+    public Map<String, String> getOrderStatusMap() { return Collections.unmodifiableMap(orderStatusMap); }
+}
+```
+
+---
+
+## OrderController.java
+
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    @Autowired
+    private OrderService orderService;
+
+
+    // Single async order — response comes back immediately with 202
+    @PostMapping("/async")
+    public ResponseEntity<String> placeOrderAsync(@RequestBody OrderRequest request) {
+        orderService.sendNotificationAsync(request.getOrderId()); // fire and forget
+        return ResponseEntity.accepted().body("Order accepted, processing in background");
+    }
+
+
+    // Single order with result — waits for async result
+    @PostMapping
+    public ResponseEntity<OrderResponse> placeOrder(@RequestBody OrderRequest request)
+            throws ExecutionException, InterruptedException {
+        CompletableFuture<OrderResponse> future = orderService.processOrderAsync(request);
+        return ResponseEntity.ok(future.get());  // blocks until done
+    }
+
+
+    // Bulk orders — all processed in parallel, response after all complete
+    @PostMapping("/bulk")
+    public ResponseEntity<List<OrderResponse>> placeBulkOrders(
+            @RequestBody List<OrderRequest> requests) {
+        List<OrderResponse> responses = orderService.processBulkOrders(requests);
+        return ResponseEntity.ok(responses);
+    }
+
+
+    // Stats endpoint — how many orders processed
+    @GetMapping("/stats")
+    public ResponseEntity<Map<String, Object>> stats() {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("processedCount", orderService.getProcessedCount());
+        stats.put("orderStatuses", orderService.getOrderStatusMap());
+        return ResponseEntity.ok(stats);
+    }
+}
+```
+
+---
+
+## Virtual Threads — Java 21 (Separate Implementation)
+
+```
+  VIRTUAL THREADS vs PLATFORM THREADS:
+  ======================================
+
+  Platform Thread                      Virtual Thread
+  ──────────────────────────────────   ────────────────────────────────────
+  Mapped 1:1 to OS thread              Managed by JVM (not OS)
+  ~1MB stack memory each               ~few KB each
+  Max ~thousands per JVM               Millions possible per JVM
+  Thread.sleep() blocks OS thread      Thread.sleep() unmounts from carrier
+  Context switch = expensive           Context switch = cheap (JVM level)
+  Good for CPU-bound tasks             Great for IO-bound tasks
+
+  HOW IT WORKS INTERNALLY:
+  ========================
+
+  Virtual Thread  -->  mounted on  -->  Carrier Thread (platform thread from ForkJoinPool)
+                                              |
+                                        when virtual thread does IO / sleep:
+                                              |
+                                        virtual thread UNMOUNTS from carrier
+                                              |
+                                        carrier picks up another virtual thread
+                                              |
+                                        when IO completes --> virtual thread REMOUNTS
+```
+
+```java
+// ════════════════════════════════════════════════════════════════════
+// VirtualThreadConfig.java
+// Java 21+ — configure Spring Boot to use virtual threads for requests
+// ════════════════════════════════════════════════════════════════════
+@Configuration
+public class VirtualThreadConfig {
+
+    // ── Option 1: Replace Tomcat's thread pool with virtual threads ──
+    // Each incoming HTTP request gets its own virtual thread
+    @Bean
+    public TomcatProtocolHandlerCustomizer<?> virtualThreadTomcatCustomizer() {
+        return protocolHandler ->
+            protocolHandler.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+    }
+
+
+    // ── Option 2: Virtual thread executor bean for @Async ────────────
+    @Bean(name = "virtualTaskExecutor")
+    public Executor virtualTaskExecutor() {
+        // Each submitted task gets a brand new virtual thread
+        // No pool needed — virtual threads are cheap to create
+        return Executors.newVirtualThreadPerTaskExecutor();
+    }
+}
+```
+
+```java
+// ════════════════════════════════════════════════════════════════════
+// VirtualThreadOrderService.java
+// Using virtual threads for IO-bound microservice calls
+// ════════════════════════════════════════════════════════════════════
+@Service
+public class VirtualThreadOrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(VirtualThreadOrderService.class);
+
+
+    // ── 1. Manually create a virtual thread ──────────────────────────
+    public void processWithVirtualThread(OrderRequest request) {
+        Thread vThread = Thread.ofVirtual()
+            .name("vt-order-", 1)           // name prefix + counter
+            .start(() -> {
+                log.info("[{}] Processing order={} | isVirtual={}",
+                    Thread.currentThread().getName(),
+                    request.getOrderId(),
+                    Thread.currentThread().isVirtual());  // true
+
+                // IO call (DB, HTTP) — virtual thread unmounts here
+                // carrier thread is freed to handle other virtual threads
+                simulateIOCall();
+            });
+
+        try { vThread.join(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+
+    // ── 2. Virtual thread executor — submit tasks ─────────────────────
+    public List<OrderResponse> processBulkWithVirtualThreads(List<OrderRequest> orders)
+            throws InterruptedException {
+
+        List<OrderResponse> results = Collections.synchronizedList(new ArrayList<>());
+
+        // newVirtualThreadPerTaskExecutor: each task = new virtual thread
+        // no pool size limit — JVM handles scheduling
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+
+            List<Future<OrderResponse>> futures = orders.stream()
+                .map(order -> executor.submit(() -> processOrder(order)))
+                .collect(Collectors.toList());
+
+            for (Future<OrderResponse> future : futures) {
+                try {
+                    results.add(future.get());
+                } catch (ExecutionException e) {
+                    log.error("Order processing failed: {}", e.getCause().getMessage());
+                }
+            }
+        } // executor.close() auto-called here -- waits for all tasks
+
+        return results;
+    }
+
+
+    // ── 3. @Async with virtual thread executor ────────────────────────
+    @Async("virtualTaskExecutor")    // uses the VirtualThreadConfig bean
+    public CompletableFuture<OrderResponse> processOrderVirtualAsync(OrderRequest request) {
+        log.info("[{}] Virtual async processing | isVirtual={}",
+            Thread.currentThread().getName(),
+            Thread.currentThread().isVirtual());
+
+        simulateIOCall();  // blocks virtual thread, NOT carrier thread
+
+        return CompletableFuture.completedFuture(
+            OrderResponse.builder()
+                .orderId(request.getOrderId())
+                .status("PROCESSED")
+                .processedBy(Thread.currentThread().getName())
+                .build()
+        );
+    }
+
+
+    // ── 4. StructuredTaskScope (Java 21) — structured concurrency ─────
+    // Run subtasks in scope; scope waits for all before returning
+    public OrderResponse processWithStructuredConcurrency(OrderRequest request)
+            throws InterruptedException, ExecutionException {
+
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+
+            // fork two concurrent subtasks (each on own virtual thread)
+            StructuredTaskScope.Subtask<String> inventoryTask =
+                scope.fork(() -> checkInventory(request.getProductId()));
+
+            StructuredTaskScope.Subtask<String> pricingTask =
+                scope.fork(() -> fetchPrice(request.getProductId()));
+
+            scope.join();           // wait for both
+            scope.throwIfFailed();  // propagate first failure if any
+
+            // Both subtasks done successfully
+            String stock = inventoryTask.get();
+            String price = pricingTask.get();
+
+            log.info("Stock={}, Price={}", stock, price);
+
+            return OrderResponse.builder()
+                .orderId(request.getOrderId())
+                .status("VALIDATED")
+                .processedBy("structured-concurrency")
+                .build();
+        }
+    }
+
+
+    // ── Simulated IO / downstream calls ──────────────────────────────
+    private OrderResponse processOrder(OrderRequest request) {
+        simulateIOCall();
+        return OrderResponse.builder()
+            .orderId(request.getOrderId())
+            .status("PROCESSED")
+            .processedBy(Thread.currentThread().getName())
+            .build();
+    }
+
+    private void simulateIOCall() {
+        try { Thread.sleep(Duration.ofMillis(200)); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    private String checkInventory(String productId) throws InterruptedException {
+        Thread.sleep(150);
+        return "IN_STOCK";
+    }
+
+    private String fetchPrice(String productId) throws InterruptedException {
+        Thread.sleep(100);
+        return "499.99";
+    }
+}
+```
+
+---
+
+## application.yml for Virtual Threads (Spring Boot 3.2+)
+
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true   # Spring Boot 3.2+ -- enables virtual threads globally
+                      # replaces Tomcat thread pool + @Async executor automatically
+                      # you don't even need VirtualThreadConfig above if using this
+```
+
+---
+
+## Key Classes — Quick Reference
+
+```
+  CLASS / INTERFACE            PACKAGE                    USE CASE
+  ─────────────────────────────────────────────────────────────────────────
+
+  Thread                       java.lang                  Basic thread creation
+  Runnable                     java.lang                  Task with no return value
+  Callable<V>                  java.util.concurrent       Task with return value + exception
+
+  ExecutorService              java.util.concurrent       Thread pool interface
+  ThreadPoolExecutor           java.util.concurrent       Full-control thread pool
+  Executors                    java.util.concurrent       Factory: newFixed/Cached/Virtual
+
+  Future<V>                    java.util.concurrent       Handle to async result (.get() blocks)
+  CompletableFuture<V>         java.util.concurrent       Non-blocking async pipeline
+
+  CountDownLatch               java.util.concurrent       Wait for N events (one-time)
+  CyclicBarrier                java.util.concurrent       Wait for N threads (reusable)
+  Semaphore                    java.util.concurrent       Limit concurrent access (N permits)
+  Phaser                       java.util.concurrent       Dynamic barrier (threads join/leave)
+
+  ReentrantLock                java.util.concurrent.locks Explicit lock with tryLock/timeout
+  ReadWriteLock                java.util.concurrent.locks Read-many write-one locking
+  StampedLock                  java.util.concurrent.locks Optimistic read (Java 8, fastest)
+
+  AtomicInteger                java.util.concurrent.atomic Lock-free int (CAS operations)
+  AtomicLong                   java.util.concurrent.atomic Lock-free long
+  AtomicReference<V>           java.util.concurrent.atomic Lock-free object reference
+  LongAdder                    java.util.concurrent.atomic Better than AtomicLong under contention
+
+  ConcurrentHashMap            java.util.concurrent       Thread-safe map (segment locking)
+  CopyOnWriteArrayList         java.util.concurrent       Thread-safe list (write = full copy)
+  BlockingQueue                java.util.concurrent       Producer-consumer queue
+
+  ForkJoinPool                 java.util.concurrent       Work-stealing pool (Java 7)
+  RecursiveTask<V>             java.util.concurrent       Fork/join with result
+  RecursiveAction              java.util.concurrent       Fork/join without result
+
+  Thread.ofVirtual()           java.lang (Java 21)        Create virtual thread
+  StructuredTaskScope          java.util.concurrent (21)  Structured concurrency scope
+
+  ThreadPoolTaskExecutor       Spring                     Spring-managed thread pool
+  @Async                       Spring                     Async method execution
+  @Scheduled                   Spring                     Scheduled task execution
+```
+
+---
+
+## Interview Key Points
+
+| Topic | What to say |
+|---|---|
+| `@Async` needs `@EnableAsync` | Without `@EnableAsync` on a `@Configuration` class, `@Async` is silently ignored — method runs synchronously |
+| Self-invocation problem | Calling an `@Async` method from within the **same class** bypasses the proxy — the method runs synchronously. Fix: inject the bean into itself or move to separate class |
+| `CompletableFuture.allOf()` vs `anyOf()` | `allOf()` waits for ALL futures. `anyOf()` returns when the FIRST one completes |
+| `synchronized` vs `ReentrantLock` | `synchronized` is simpler but can't timeout. `ReentrantLock.tryLock()` prevents deadlocks by giving up after N seconds |
+| `AtomicInteger` vs `synchronized` counter | `AtomicInteger` is lock-free (CAS), much faster under contention. Use it for counters/flags |
+| Virtual threads are NOT faster for CPU | Virtual threads shine for IO-bound work (DB, HTTP, file). For CPU-bound tasks, platform threads + `ForkJoinPool` is better |
+| `StructuredTaskScope` | Java 21's answer to "fork N tasks, wait for all, cancel on first failure" — cleaner than `CompletableFuture.allOf()` |
+| `CallerRunsPolicy` | When thread pool is saturated, the calling thread runs the task itself — acts as natural backpressure, no task rejection |
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

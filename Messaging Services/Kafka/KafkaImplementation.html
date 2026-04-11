@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Great timing for your interview prep! Here's a well-structured two-microservice setup — an **Order Service** (Kafka Producer) and a **Notification Service** (Kafka Consumer) — communicating asynchronously through Kafka.
+
+Let me first show you the architecture, then give you the full code.
+```
+
+  REST Client                                              Email / SMS
+      |                                                        ^
+      | POST /orders                                   notify()|
+      v                                                        |
++------------------+    publish()    +--------------------+    consume()  +----------------------+
+|                  |  ------------>  |                    |  -----------> |                      |
+|  Order Service   |                 |   Kafka Broker     |               | Notification Service |
+|  (Producer)      |                 |                    |               | (Consumer)           |
+|                  |                 |  Topic:            |               |                      |
+|  KafkaTemplate   |                 |  order-events      |               |  @KafkaListener      |
+|  .send(topic,    |                 |                    |               |  group-id:           |
+|   key, event)    |                 |  +----+----+----+  |               |  notification-group  |
+|                  |                 |  | P0 | P1 | P2 |  |               |                      |
++------------------+                 |  +----+----+----+  |               +----------------------+
+                                     |   (3 partitions)   |
+                                     |                    |
+                                     +--------------------+
+                                              |
+                                     +--------------------+
+                                     |   Zookeeper /      |
+                                     |   KRaft            |
+                                     |   (coordination)   |
+                                     +--------------------+
+
+
+  KEY FLOW:
+  =========
+  [1] REST Client sends POST /orders
+  [2] Order Service publishes OrderEvent to topic "order-events" (key = orderId)
+  [3] Kafka routes to partition based on key hash
+  [4] Notification Service polls its assigned partitions
+  [5] Sends Email (PLACED) or SMS (CANCELLED) based on event status
+
+
+  GUARANTEES:
+  ===========
+  - Same orderId  -->  same partition  -->  ordering preserved
+  - Consumer group -->  each partition consumed by ONE instance only
+  - Failed messages --> Dead Letter Topic (after 3 retries)
+```
+## Project Structure
+
+Two separate Spring Boot projects:
+
+```
+kafka-demo/
+├── order-service/        ← Producer
+└── notification-service/ ← Consumer
+```
+
+---
+
+## 1. Shared: `application.yml` (both services)
+
+```yaml
+# order-service/src/main/resources/application.yml
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+kafka:
+  topic:
+    order-events: order-events
+```
+
+```yaml
+# notification-service/src/main/resources/application.yml
+server:
+  port: 8082
+
+spring:
+  application:
+    name: notification-service
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: notification-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+```
+
+---
+
+## 2. Shared DTO
+
+Both services need the same event class (copy it to both or share via a common library).
+
+```java
+// com.demo.shared.OrderEvent.java
+public class OrderEvent {
+    private String orderId;
+    private String customerId;
+    private String status;     // PLACED, CONFIRMED, CANCELLED
+    private double amount;
+
+    // constructors
+    public OrderEvent() {}
+    public OrderEvent(String orderId, String customerId, String status, double amount) {
+        this.orderId = orderId;
+        this.customerId = customerId;
+        this.status = status;
+        this.amount = amount;
+    }
+
+    // getters & setters (or use Lombok @Data)
+    public String getOrderId() { return orderId; }
+    public void setOrderId(String orderId) { this.orderId = orderId; }
+    public String getCustomerId() { return customerId; }
+    public void setCustomerId(String customerId) { this.customerId = customerId; }
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+    public double getAmount() { return amount; }
+    public void setAmount(double amount) { this.amount = amount; }
+}
+```
+
+---
+
+## 3. Order Service (Producer)
+
+### `pom.xml` dependencies
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+```
+
+### Topic Config
+```java
+// KafkaTopicConfig.java
+@Configuration
+public class KafkaTopicConfig {
+
+    @Value("${kafka.topic.order-events}")
+    private String orderEventsTopic;
+
+    @Bean
+    public NewTopic orderEventsTopic() {
+        return TopicBuilder.name(orderEventsTopic)
+                .partitions(3)
+                .replicas(1)
+                .build();
+    }
+}
+```
+
+### Producer Service
+```java
+// OrderProducerService.java
+@Service
+public class OrderProducerService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderProducerService.class);
+
+    @Autowired
+    private KafkaTemplate<String, OrderEvent> kafkaTemplate;
+
+    @Value("${kafka.topic.order-events}")
+    private String topic;
+
+    public void publishOrderEvent(OrderEvent event) {
+        // orderId as the key → guarantees ordering per order
+        kafkaTemplate.send(topic, event.getOrderId(), event)
+            .whenComplete((result, ex) -> {
+                if (ex != null) {
+                    log.error("Failed to publish order event for orderId={}", event.getOrderId(), ex);
+                } else {
+                    log.info("Published order event: orderId={}, partition={}, offset={}",
+                        event.getOrderId(),
+                        result.getRecordMetadata().partition(),
+                        result.getRecordMetadata().offset());
+                }
+            });
+    }
+}
+```
+
+### REST Controller
+```java
+// OrderController.java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    @Autowired
+    private OrderProducerService producerService;
+
+    @PostMapping
+    public ResponseEntity<String> placeOrder(@RequestBody OrderEvent event) {
+        // In real code: save to DB first, then publish
+        event.setStatus("PLACED");
+        producerService.publishOrderEvent(event);
+        return ResponseEntity.ok("Order placed and event published: " + event.getOrderId());
+    }
+}
+```
+
+---
+
+## 4. Notification Service (Consumer)
+
+### `pom.xml` dependencies
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+```
+
+### Consumer
+```java
+// OrderEventConsumer.java
+@Service
+public class OrderEventConsumer {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderEventConsumer.class);
+
+    @KafkaListener(
+        topics = "order-events",
+        groupId = "notification-group",
+        containerFactory = "kafkaListenerContainerFactory"
+    )
+    public void consumeOrderEvent(
+            ConsumerRecord<String, OrderEvent> record,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+            @Header(KafkaHeaders.OFFSET) long offset) {
+
+        OrderEvent event = record.value();
+        log.info("Received order event: orderId={}, status={}, partition={}, offset={}",
+            event.getOrderId(), event.getStatus(), partition, offset);
+
+        // Route based on status
+        switch (event.getStatus()) {
+            case "PLACED"    -> sendOrderConfirmationEmail(event);
+            case "CANCELLED" -> sendCancellationSms(event);
+            default          -> log.warn("Unknown status: {}", event.getStatus());
+        }
+    }
+
+    private void sendOrderConfirmationEmail(OrderEvent event) {
+        // Plug in JavaMailSender / SendGrid / SES here
+        log.info("Sending confirmation email to customerId={} for orderId={}",
+            event.getCustomerId(), event.getOrderId());
+    }
+
+    private void sendCancellationSms(OrderEvent event) {
+        log.info("Sending cancellation SMS to customerId={} for orderId={}",
+            event.getCustomerId(), event.getOrderId());
+    }
+}
+```
+
+### Consumer Config (for error handling)
+```java
+// KafkaConsumerConfig.java
+@Configuration
+public class KafkaConsumerConfig {
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, OrderEvent>
+            kafkaListenerContainerFactory(
+                ConsumerFactory<String, OrderEvent> consumerFactory) {
+
+        ConcurrentKafkaListenerContainerFactory<String, OrderEvent> factory =
+            new ConcurrentKafkaListenerContainerFactory<>();
+
+        factory.setConsumerFactory(consumerFactory);
+        factory.setConcurrency(3); // matches partition count
+
+        // Retry 3 times before sending to dead-letter topic
+        factory.setCommonErrorHandler(
+            new DefaultErrorHandler(
+                new DeadLetterPublishingRecoverer(kafkaTemplate()),
+                new FixedBackOff(1000L, 3L)
+            )
+        );
+        return factory;
+    }
+}
+```
+
+---
+
+## 5. How to Test
+
+```bash
+# Start Kafka locally (Docker)
+docker run -p 9092:9092 apache/kafka:3.7.0
+
+# Run both Spring Boot apps, then:
+curl -X POST http://localhost:8081/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderId": "ORD-001",
+    "customerId": "CUST-42",
+    "amount": 1299.99
+  }'
+```
+
+You'll see the producer log in Order Service and the consumer log in Notification Service.
+
+---
+
+## Interview Key Points to Mention
+
+| Concept | What you did |
+|---|---|
+| **Decoupling** | Services don't call each other directly — Kafka is the middleman |
+| **Partitioning** | Used `orderId` as the key → same order's events always go to same partition (ordering guarantee) |
+| **Consumer group** | `notification-group` — multiple instances share the load, each partition consumed by one instance |
+| **Dead-letter topic** | `DefaultErrorHandler` with `DeadLetterPublishingRecoverer` — failed messages don't get lost |
+| **`whenComplete`** | Non-blocking send with async callback — production-grade pattern |
+| **`@Header`** | Accessing Kafka metadata (partition, offset) for observability |
+
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>
