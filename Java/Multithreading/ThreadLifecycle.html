@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's a complete deep-dive into Thread Lifecycle — everything from basics to interview depth.
+
+---
+
+## Thread Lifecycle — Big Picture
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                         JAVA THREAD LIFECYCLE                                     |
+  +-----------------------------------------------------------------------------------+
+
+                              NEW
+                               │
+                               │  thread.start()
+                               │
+                               ▼
+                          ┌─────────┐
+                     ┌───>│RUNNABLE │<───────────────────────────────┐
+                     │    └─────────┘                                │
+                     │         │                                     │
+                     │         │  OS scheduler picks thread          │
+                     │         │  (no separate RUNNING state in Java)│
+                     │         │                                     │
+                     │    ┌─────────┐   synchronized block      ┌────────────────┐
+                     │    │RUNNING  │──────────────────────────>│    BLOCKED     │
+                     │    │(logical)│   lock not available       │(waiting 4 lock)│
+                     │    └─────────┘                            └────────────────┘
+                     │         │                                     │
+                     │         │ Object.wait()                       │ lock acquired
+                     │         │ Thread.join()          ┌───────────>│
+                     │         │ LockSupport.park()     │            └────────────────┘
+                     │         ▼                        │
+                     │    ┌─────────┐   notify()        │
+                     │    │WAITING  │───────────────────┘
+                     │    └─────────┘
+                     │         │
+                     │         │ wait(timeout)
+                     │         │ Thread.sleep(ms)
+                     │         │ join(timeout)
+                     │         ▼
+                     │  ┌─────────────┐  timeout expires
+                     └──│TIMED_WAITING│──────────────────────────────┘
+                        └─────────────┘
+                               │
+                               │  run() completes / exception
+                               ▼
+                          TERMINATED
+
+
+  6 OFFICIAL STATES (Thread.State enum):
+  ========================================
+  NEW              Created but not started yet
+  RUNNABLE         Started -- running OR ready to run (OS decides)
+  BLOCKED          Waiting to acquire a monitor lock (synchronized)
+  WAITING          Waiting indefinitely (wait, join, park)
+  TIMED_WAITING    Waiting with timeout (sleep, wait(ms), join(ms))
+  TERMINATED       Finished execution (run() returned or threw exception)
+```
+
+---
+
+## State 1 — NEW
+
+```java
+  // Thread created but start() NOT called yet.
+  // Thread object exists in memory but no OS thread created yet.
+
+  Thread t = new Thread(() -> System.out.println("Hello"));
+  System.out.println(t.getState());   // NEW
+
+  // Thread stays NEW until start() is called.
+  // Calling start() twice throws IllegalThreadStateException.
+
+
+  WHAT EXISTS AT THIS POINT:
+  ==========================
+  ┌──────────────────────────────────────────┐
+  │  Thread object (Java heap)               │
+  │   - name = "Thread-0"                    │
+  │   - priority = 5 (NORM_PRIORITY)         │
+  │   - daemon = false                       │
+  │   - state = NEW                          │
+  │   - target = Runnable (your lambda)      │
+  │                                          │
+  │  NO OS thread yet                        │
+  │  NO stack allocated yet                  │
+  └──────────────────────────────────────────┘
+```
+
+---
+
+## State 2 — RUNNABLE
+
+```java
+  // After start() is called.
+  // Includes BOTH "ready to run" AND "actually running" states.
+  // Java combines these into one RUNNABLE state.
+  // OS scheduler decides which RUNNABLE thread actually runs on CPU.
+
+  Thread t = new Thread(() -> {
+      System.out.println(Thread.currentThread().getState()); // RUNNABLE
+      // do work
+  });
+  t.start();
+  System.out.println(t.getState());   // RUNNABLE (may print before thread runs)
+
+
+  WHY JAVA HAS NO SEPARATE "RUNNING" STATE:
+  ==========================================
+  JVM runs on top of OS.
+  OS can preempt a running thread at any instant (quantum expiry).
+  By the time Java code reads getState(), thread could have been
+  preempted and moved back to "ready." State would be stale.
+  So Java merges ready + running into RUNNABLE.
+
+  WHAT HAPPENS INTERNALLY AT start():
+  =====================================
+  1. JVM validates thread not already started
+  2. OS thread created (pthread_create on Linux)
+  3. OS allocates thread stack (default 512KB - 1MB)
+  4. Thread added to thread scheduler's ready queue
+  5. Java thread state --> RUNNABLE
+  6. When OS picks thread: run() / call() executes
+  7. Thread.start() returns IMMEDIATELY (non-blocking)
+
+  ┌──────────────────────────────────────────────────────┐
+  │              OS SCHEDULER VIEW                       │
+  │                                                      │
+  │  CPU Core 1: [Thread-1 running]                      │
+  │  CPU Core 2: [Thread-3 running]                      │
+  │                                                      │
+  │  Ready queue: [Thread-2] [Thread-4] [Thread-5]       │
+  │  (all are RUNNABLE in Java's view)                   │
+  │                                                      │
+  │  Thread-1 quantum expires --> moved to ready queue   │
+  │  Thread-2 picked from ready queue --> runs on Core 1 │
+  └──────────────────────────────────────────────────────┘
+```
+
+---
+
+## State 3 — BLOCKED
+
+```java
+  // Thread trying to enter a synchronized block/method
+  // but another thread already holds that monitor lock.
+  // Thread waits passively -- no CPU usage.
+
+  Object lock = new Object();
+
+  Thread t1 = new Thread(() -> {
+      synchronized (lock) {
+          System.out.println("T1 holds lock");
+          Thread.sleep(3000);              // holds lock for 3 seconds
+      }
+  });
+
+  Thread t2 = new Thread(() -> {
+      synchronized (lock) {               // tries to acquire lock
+          System.out.println("T2 got lock");
+      }
+  });
+
+  t1.start();
+  Thread.sleep(100);   // let t1 get the lock first
+  t2.start();
+  Thread.sleep(100);   // let t2 try to get the lock
+
+  System.out.println(t2.getState());      // BLOCKED
+
+
+  STATE FLOW:
+  ===========
+  T2 hits synchronized(lock)
+       │
+       ▼
+  Is lock free?
+       NO (T1 holds it)
+       │
+       ▼
+  T2 --> BLOCKED
+  T2 added to lock's ENTRY SET (queue of waiting threads)
+  T2 uses ZERO CPU while blocked
+       │
+       ▼
+  T1 exits synchronized block --> releases lock
+       │
+       ▼
+  JVM picks one thread from ENTRY SET (not guaranteed FIFO)
+  T2 acquires lock --> RUNNABLE
+
+
+  BLOCKED vs WAITING -- KEY DIFFERENCE:
+  =======================================
+  BLOCKED:  waiting for a LOCK (synchronized keyword)
+            automatically moves to RUNNABLE when lock is free
+            no explicit notification needed
+
+  WAITING:  waiting for explicit SIGNAL (wait/notify/join/park)
+            stays WAITING until another thread calls notify()
+            or join() target thread terminates
+```
+
+---
+
+## State 4 — WAITING
+
+```java
+  // Thread waiting INDEFINITELY for a condition.
+  // Must be explicitly woken up by another thread.
+  // Three ways to enter WAITING state:
+
+  // WAY 1: Object.wait()  (must hold monitor lock)
+  synchronized (lock) {
+      lock.wait();        // releases lock, enters WAITING
+      // woken up by: lock.notify() or lock.notifyAll()
+  }
+
+  // WAY 2: Thread.join()  (wait for another thread to finish)
+  Thread worker = new Thread(() -> doWork());
+  worker.start();
+  worker.join();          // current thread enters WAITING
+  // woken up when: worker thread terminates
+
+  // WAY 3: LockSupport.park()
+  LockSupport.park();     // enters WAITING
+  // woken up by: LockSupport.unpark(thread)
+
+
+  WAIT / NOTIFY MECHANISM IN DETAIL:
+  ====================================
+
+  Every Java object has TWO internal sets:
+  ┌──────────────────────────────────────────────┐
+  │  Object (every Java object)                  │
+  │                                              │
+  │  Monitor Lock (one thread holds at a time)   │
+  │                                              │
+  │  Entry Set   [T2, T5]  <-- BLOCKED threads   │
+  │  Wait Set    [T3, T4]  <-- WAITING threads   │
+  └──────────────────────────────────────────────┘
+
+  WAIT flow:
+  Thread calls lock.wait()
+    1. Must HOLD the monitor lock (else IllegalMonitorStateException)
+    2. Thread RELEASES the lock
+    3. Thread moves to WAIT SET
+    4. Thread state --> WAITING
+    5. Other threads can now acquire the lock
+
+  NOTIFY flow:
+  Thread calls lock.notify()
+    1. Must HOLD the monitor lock
+    2. ONE thread moved from WAIT SET --> ENTRY SET
+    3. That thread competes for lock (BLOCKED until lock free)
+    4. Gets lock --> RUNNABLE --> continues after wait()
+
+  lock.notifyAll() --> ALL threads in WAIT SET moved to ENTRY SET
+
+
+  CLASSIC PRODUCER-CONSUMER:
+  ===========================
+  Queue<String> queue = new LinkedList<>();
+  Object lock = new Object();
+
+  // Consumer thread:
+  synchronized (lock) {
+      while (queue.isEmpty()) {      // ALWAYS use while, not if
+          lock.wait();               // WAITING -- releases lock
+      }
+      String item = queue.poll();
+  }
+
+  // Producer thread:
+  synchronized (lock) {
+      queue.add("item");
+      lock.notify();                 // wake one waiting consumer
+  }
+
+  WHY while AND NOT if?
+  Spurious wakeups: thread can wake up WITHOUT notify() being called.
+  (OS-level phenomenon -- Java spec explicitly allows it)
+  while loop re-checks condition after wakeup.
+  if would proceed even if condition still false.
+```
+
+---
+
+## State 5 — TIMED\_WAITING
+
+```java
+  // Thread waiting for a SPECIFIED TIME.
+  // Automatically wakes up after timeout -- no notify needed.
+  // Four ways to enter TIMED_WAITING:
+
+  // WAY 1: Thread.sleep(ms) -- most common
+  Thread.sleep(1000);            // TIMED_WAITING for 1 second
+  // Does NOT release any monitor lock
+  // Wakes up after 1000ms OR if interrupted
+
+  // WAY 2: Object.wait(ms)
+  synchronized (lock) {
+      lock.wait(5000);           // TIMED_WAITING for up to 5 seconds
+      // wakes up after 5s OR if notify() called before timeout
+  }
+
+  // WAY 3: Thread.join(ms)
+  worker.join(3000);             // wait for worker, max 3 seconds
+  // if worker hasn't finished in 3s, current thread resumes anyway
+
+  // WAY 4: LockSupport.parkNanos() / parkUntil()
+  LockSupport.parkNanos(1_000_000_000L);  // park for 1 second
+
+
+  sleep() vs wait() -- THE CLASSIC INTERVIEW QUESTION:
+  =====================================================
+
+  FEATURE                 sleep()              wait()
+  ──────────────────────────────────────────────────────────────────
+  Class                   Thread (static)      Object (instance)
+  Lock release            NO                   YES (releases monitor)
+  Requires lock           NO                   YES (must hold monitor)
+  Woken by                timeout only         notify()/notifyAll()/timeout
+  Used for                delay execution      inter-thread communication
+  InterruptedException    YES (throws)         YES (throws)
+  State entered           TIMED_WAITING        WAITING or TIMED_WAITING
+  Defined in              java.lang.Thread     java.lang.Object
+
+  KEY: sleep() holds the lock, wait() releases it.
+  If T1 calls sleep(5000) inside synchronized block --
+  T2 cannot enter that synchronized block for 5 full seconds.
+  If T1 calls wait() inside synchronized block --
+  T2 can enter immediately (lock released).
+```
+
+---
+
+## State 6 — TERMINATED
+
+```java
+  // Thread has finished executing.
+  // run() method returned normally OR threw an uncaught exception.
+  // Thread object still exists in Java heap but OS thread is gone.
+  // Cannot be restarted -- calling start() throws IllegalThreadStateException.
+
+  Thread t = new Thread(() -> System.out.println("Done"));
+  t.start();
+  t.join();    // wait for t to finish
+  System.out.println(t.getState());   // TERMINATED
+
+  // Thread object can still be queried:
+  t.getName()       // still works
+  t.getState()      // TERMINATED
+  t.isAlive()       // false
+  t.start()         // IllegalThreadStateException!
+
+
+  WHAT HAPPENS AT TERMINATION:
+  ==============================
+  1. run() method returns (or throws uncaught exception)
+  2. OS thread destroyed, stack deallocated
+  3. All locks held by thread released automatically
+  4. Thread removed from thread group
+  5. Threads waiting on t.join() are notified and wake up
+  6. Java Thread object remains (garbage collected eventually)
+
+  UNCAUGHT EXCEPTION HANDLER:
+  ============================
+  Thread t = new Thread(() -> {
+      throw new RuntimeException("Crash!");
+  });
+
+  // Set handler before starting:
+  t.setUncaughtExceptionHandler((thread, ex) -> {
+      System.err.println("Thread " + thread.getName()
+          + " crashed: " + ex.getMessage());
+      // log to monitoring, send alert etc.
+  });
+
+  t.start();
+  // Thread terminates with TERMINATED state
+  // Handler called with the exception
+```
+
+---
+
+## Thread Interruption — The Right Way to Stop a Thread
+
+```java
+  // There is NO safe way to forcibly stop a thread in Java.
+  // Thread.stop() is DEPRECATED (can leave objects in inconsistent state).
+  // Correct approach: COOPERATIVE interruption via interrupt flag.
+
+
+  HOW INTERRUPT WORKS:
+  ====================
+  Each thread has a boolean "interrupt flag" (default false).
+
+  thread.interrupt()
+    --> sets flag to true
+    --> if thread is in WAITING/TIMED_WAITING:
+        InterruptedException thrown immediately
+        flag reset to FALSE
+    --> if thread is RUNNABLE:
+        flag set to TRUE
+        thread must CHECK and respond
+
+  Thread.currentThread().isInterrupted()  --> read flag (does NOT reset)
+  Thread.interrupted()                    --> read flag AND reset to false
+
+
+  SCENARIO 1: Thread sleeping -- interrupted:
+  ============================================
+  Thread t = new Thread(() -> {
+      try {
+          System.out.println("Sleeping...");
+          Thread.sleep(10000);               // TIMED_WAITING
+          System.out.println("Woke naturally");
+      } catch (InterruptedException e) {
+          // InterruptedException thrown immediately when interrupted
+          // flag already reset to false here
+          System.out.println("Interrupted during sleep!");
+          Thread.currentThread().interrupt();  // re-set flag (best practice)
+      }
+  });
+
+  t.start();
+  Thread.sleep(100);
+  t.interrupt();    // wakes t from sleep with InterruptedException
+                    // t moves from TIMED_WAITING --> RUNNABLE
+
+
+  SCENARIO 2: Thread running -- must check flag:
+  ===============================================
+  Thread t = new Thread(() -> {
+      while (!Thread.currentThread().isInterrupted()) {  // check flag
+          processNextItem();    // do work
+      }
+      System.out.println("Stopping gracefully");
+  });
+
+  t.start();
+  Thread.sleep(1000);
+  t.interrupt();    // sets flag -- loop exits on next check
+
+
+  SCENARIO 3: Thread blocked on I/O -- interrupt may not work:
+  =============================================================
+  // Blocking I/O (InputStream.read(), Socket.accept()) does NOT
+  // throw InterruptedException on interrupt in most cases.
+  // Close the stream/socket instead to unblock.
+  socket.close();   // unblocks threads waiting on socket I/O
+
+
+  WHY RE-SET THE FLAG AFTER CATCH?
+  =================================
+  catch (InterruptedException e) {
+      Thread.currentThread().interrupt();  // WHY?
+  }
+  InterruptedException clears the flag.
+  Callers of your method may need to know thread was interrupted.
+  Re-setting preserves the interrupted signal for higher-level code.
+  Swallowing InterruptedException silently is a common bug.
+```
+
+---
+
+## Thread Priority
+
+```java
+  // Thread priority hints to OS scheduler.
+  // NOT guaranteed -- OS may ignore it entirely.
+  // Platform-dependent behavior.
+
+  Thread.MIN_PRIORITY  = 1
+  Thread.NORM_PRIORITY = 5  (default)
+  Thread.MAX_PRIORITY  = 10
+
+  Thread t = new Thread(() -> doWork());
+  t.setPriority(Thread.MAX_PRIORITY);   // hint: prefer this thread
+  t.start();
+
+  // On Linux: priorities may be ignored (all threads treated equally by default)
+  // On Windows: maps to OS priority levels more directly
+
+  // INTERVIEW TIP:
+  // "Priority is a hint, not a guarantee."
+  // Never design correctness around thread priority.
+  // Use it only for performance hints (e.g. background tasks at MIN_PRIORITY).
+```
+
+---
+
+## Daemon Threads
+
+```java
+  // Two types of threads:
+  // User threads:   keep JVM alive until they finish
+  // Daemon threads: JVM exits when ONLY daemon threads remain
+
+  Thread daemon = new Thread(() -> {
+      while (true) {
+          System.out.println("Background work...");
+          Thread.sleep(1000);
+      }
+  });
+
+  daemon.setDaemon(true);    // MUST set before start()
+  daemon.start();
+  // When all user threads finish, JVM exits
+  // daemon thread is killed abruptly (no finally blocks, no cleanup)
+
+  Thread.currentThread().isDaemon()   // check if current is daemon
+
+  // DAEMON THREAD RULES:
+  // 1. Must call setDaemon(true) BEFORE start()
+  //    After start: IllegalThreadStateException
+  // 2. Thread created by daemon is daemon by default
+  //    Thread created by user thread is user thread by default
+  // 3. JVM exit kills daemon threads abruptly
+  //    No guarantee finally blocks run -- don't use for I/O or DB operations
+
+  // USE CASES:
+  // GC thread (JVM daemon)
+  // Heartbeat monitor
+  // Background cleanup
+  // Log flusher
+  // Connection pool health check
+
+  // COMPARISON:
+  // User thread:   JVM waits for it to finish before exit
+  // Daemon thread: JVM doesn't wait -- exits when no user threads remain
+```
+
+---
+
+## Thread Join
+
+```java
+  // join() makes the CALLING thread wait for the TARGET thread to finish.
+
+  Thread worker = new Thread(() -> {
+      System.out.println("Worker: started");
+      Thread.sleep(2000);
+      System.out.println("Worker: done");
+  });
+
+  worker.start();
+
+  System.out.println("Main: waiting for worker");
+  worker.join();              // main thread --> WAITING until worker finishes
+  System.out.println("Main: worker finished, continuing");
+
+  // Output:
+  // Main: waiting for worker
+  // Worker: started
+  // Worker: done
+  // Main: worker finished, continuing
+
+
+  // join() with timeout:
+  worker.join(5000);          // wait max 5 seconds
+  if (worker.isAlive()) {
+      System.out.println("Worker still running after 5s timeout");
+  }
+
+  // join() FLOW:
+  // Main calls worker.join()
+  //   Main --> WAITING
+  //   Main added to worker's wait set
+  //   Worker finishes --> notifies all in its wait set
+  //   Main --> RUNNABLE
+```
+
+---
+
+## yield()
+
+```java
+  // Thread.yield() is a HINT to the scheduler.
+  // Current thread willing to give up CPU to another equal-priority thread.
+  // Scheduler may ignore it entirely.
+  // Thread goes from RUNNING --> RUNNABLE (not WAITING or BLOCKED).
+
+  Thread t = new Thread(() -> {
+      for (int i = 0; i < 1000; i++) {
+          doSomeWork(i);
+          Thread.yield();    // hint: let others run
+      }
+  });
+
+  // USE CASE: Long-running computation that should share CPU politely.
+  // RARELY USED in modern Java -- thread pools and executors handle this.
+
+  // INTERVIEW COMPARISON:
+  // sleep(0): thread temporarily leaves CPU, timer-based wakeup
+  // yield():  thread leaves CPU, immediately re-eligible (no timer)
+  // Both are hints, both platform-dependent
+```
+
+---
+
+## Thread Local
+
+```java
+  // ThreadLocal: each thread has its own INDEPENDENT copy of a variable.
+  // No synchronization needed -- not shared between threads.
+
+  ThreadLocal<String> userId = new ThreadLocal<>();
+
+  // Thread-1:
+  userId.set("user-123");
+  userId.get();              // "user-123" (Thread-1's copy)
+
+  // Thread-2 (simultaneously):
+  userId.set("user-456");
+  userId.get();              // "user-456" (Thread-2's copy, independent)
+
+  // CLEANUP -- CRITICAL in thread pools:
+  try {
+      userId.set("user-123");
+      processRequest();
+  } finally {
+      userId.remove();       // MUST remove in thread pool
+                             // threads are reused -- stale value from
+                             // previous request would leak to next request
+  }
+
+  // WITH INITIAL VALUE:
+  ThreadLocal<List<String>> logs = ThreadLocal.withInitial(ArrayList::new);
+  logs.get().add("entry");   // each thread gets its own ArrayList
+
+
+  // WHERE SPRING USES THREADLOCAL:
+  // SecurityContextHolder  -- current user per request thread
+  // RequestContextHolder   -- current HTTP request per thread
+  // TransactionSynchronizationManager -- current transaction per thread
+
+
+  // MEMORY LEAK PATTERN:
+  // ThreadLocal stored in Thread.threadLocals (WeakReference key)
+  // If ThreadLocal variable is GC'd but value is large object --
+  // value stays in thread's map (strong reference to value remains)
+  // In thread pool: thread lives forever --> large objects never GC'd
+  // FIX: always call remove() in finally
+```
+
+---
+
+## Complete State Transition Summary
+
+```
+  TRANSITION              HOW                          FROM --> TO
+  ─────────────────────────────────────────────────────────────────────────────────
+  Create                  new Thread(...)              -        --> NEW
+  Start                   thread.start()               NEW      --> RUNNABLE
+  OS picks thread         scheduler decision           RUNNABLE --> (running)
+  OS preempts thread      quantum expires              (running)--> RUNNABLE
+  Sleep                   Thread.sleep(ms)             RUNNABLE --> TIMED_WAITING
+  Sleep expires           timeout                      TIMED_WAITING --> RUNNABLE
+  Wait indefinitely       lock.wait()                  RUNNABLE --> WAITING
+  Wait with timeout       lock.wait(ms)                RUNNABLE --> TIMED_WAITING
+  Notify                  lock.notify()                WAITING  --> BLOCKED
+  NotifyAll               lock.notifyAll()             WAITING  --> BLOCKED
+  Wait timeout expires    timeout                      TIMED_WAITING --> BLOCKED
+  Lock acquired           monitor becomes free         BLOCKED  --> RUNNABLE
+  Lock contention         synchronized (locked)        RUNNABLE --> BLOCKED
+  Join target             targetThread.join()          RUNNABLE --> WAITING
+  Join with timeout       targetThread.join(ms)        RUNNABLE --> TIMED_WAITING
+  Join target finishes    target terminates            WAITING  --> RUNNABLE
+  Join timeout expires    timeout                      TIMED_WAITING --> RUNNABLE
+  Park                    LockSupport.park()           RUNNABLE --> WAITING
+  Unpark                  LockSupport.unpark(t)        WAITING  --> RUNNABLE
+  ParkNanos               LockSupport.parkNanos(ns)    RUNNABLE --> TIMED_WAITING
+  Interrupt sleeping      thread.interrupt()           TIMED_WAITING --> RUNNABLE
+  Interrupt waiting       thread.interrupt()           WAITING  --> RUNNABLE
+  Run completes           run() returns                RUNNABLE --> TERMINATED
+  Uncaught exception      exception in run()           RUNNABLE --> TERMINATED
+```
+
+---
+
+## Interview Tricky Q&A
+
+```
+  Q: "What is the difference between start() and run()?"
+  A: start(): creates a new OS thread, new stack, calls run() in new thread.
+              Returns immediately. Actual execution in new thread.
+     run():   just a regular method call on current thread.
+              No new thread created. Executes synchronously.
+     Calling run() directly -- no concurrency, no new thread.
+     This is a famous interview gotcha.
+
+
+  Q: "Can you restart a terminated thread?"
+  A: NO. Thread.State is TERMINATED.
+     Calling start() again throws IllegalThreadStateException.
+     Create a new Thread object instead.
+
+
+  Q: "What is the difference between BLOCKED and WAITING?"
+  A: BLOCKED:  waiting to acquire a synchronized monitor lock.
+               Caused by: trying to enter synchronized block held by another.
+               Automatically retried when lock becomes free.
+               No explicit notification needed.
+     WAITING:  waiting for explicit signal from another thread.
+               Caused by: wait(), join(), LockSupport.park().
+               Stays WAITING until notify()/notifyAll()/unpark() called.
+               (or target thread terminates for join())
+
+
+  Q: "Can a thread be in RUNNABLE state but not actually running?"
+  A: YES. RUNNABLE means eligible to run.
+     OS may have it in the ready queue, not yet scheduled on CPU.
+     Java has no separate READY/RUNNING state.
+     All threads waiting for CPU time show as RUNNABLE.
+
+
+  Q: "What happens to locks when a thread is interrupted from wait()?"
+  A: InterruptedException is thrown.
+     Thread is moved from WAIT SET to ENTRY SET (becomes BLOCKED).
+     Thread must RE-ACQUIRE the monitor lock before exception propagates.
+     Only after re-acquiring lock does InterruptedException throw.
+     Interrupt flag is cleared (reset to false).
+
+
+  Q: "What is spurious wakeup?"
+  A: A thread in WAITING state wakes up without notify() being called.
+     Allowed by POSIX and Java specifications.
+     Caused by OS-level signals or implementation artifacts.
+     FIX: always use while loop (not if) when calling wait():
+     while (condition not met) { lock.wait(); }
+     Loop re-checks condition after every wakeup.
+
+
+  Q: "How many threads can be in RUNNABLE state simultaneously?"
+  A: Unlimited -- all threads that are ready or running are RUNNABLE.
+     Only as many as CPU cores can actually RUN simultaneously.
+     Rest are in ready queue -- still RUNNABLE state in Java's view.
+
+
+  Q: "What is a deadlock and what states are threads in during deadlock?"
+  A: Deadlock: Thread-1 holds Lock-A, waiting for Lock-B.
+               Thread-2 holds Lock-B, waiting for Lock-A.
+               Both wait forever.
+     States during deadlock:
+       Thread-1: BLOCKED (waiting for Lock-B)
+       Thread-2: BLOCKED (waiting for Lock-A)
+     Both are BLOCKED -- no CPU used, no progress.
+     Detected by: jstack, thread dump, ThreadMXBean.findDeadlockedThreads()
+     Prevention: always acquire locks in same order (lock ordering).
+
+
+  Q: "What is the difference between notify() and notifyAll()?"
+  A: notify():    wakes ONE arbitrary thread from WAIT SET.
+                  JVM chooses which one (not FIFO, not guaranteed).
+                  Efficient but can cause starvation if wrong thread wakes.
+     notifyAll(): wakes ALL threads from WAIT SET.
+                  All move to ENTRY SET, compete for lock.
+                  Only one gets lock, rest go back to BLOCKED.
+                  Safer -- no starvation, but more contention.
+     USE notifyAll() when: multiple different conditions being waited on.
+     USE notify() when: all waiting threads check same condition (safe).
+
+
+  Q: "Does Thread.sleep() release the lock?"
+  A: NO. sleep() does NOT release any monitor lock.
+     Thread sleeps holding ALL its locks.
+     Other threads trying to acquire those locks remain BLOCKED.
+     wait() releases the lock -- sleep() does not.
+     This is the most commonly asked Thread interview distinction.
+
+
+  Q: "What is thread starvation?"
+  A: A thread in RUNNABLE state never gets CPU time because
+     higher-priority threads always preempt it.
+     Or: notify() always wakes other threads, this one waits forever.
+     Fix: fair locks (ReentrantLock(true)), use notifyAll() instead of notify(),
+     avoid extreme priority differences.
+
+
+  Q: "How do you detect thread states in production?"
+  A: jstack <pid>                     --> thread dump with states
+     jcmd <pid> Thread.print          --> same as jstack
+     VisualVM / JConsole              --> GUI thread monitor
+     ThreadMXBean API:
+       ManagementFactory.getThreadMXBean()
+         .getThreadInfo(threadId)
+         .getThreadState()            --> programmatic access
+     Thread dump shows:
+       "pool-1-thread-1" #15 BLOCKED on [Object lock]
+         waiting to lock <0x1234> held by "main" #1
+```
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

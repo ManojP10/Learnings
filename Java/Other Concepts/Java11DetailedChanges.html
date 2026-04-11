@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's everything that changed in Java 11 — complete and in depth.
+
+---
+
+## Java 11 — Big Picture of Changes
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                          ALL CHANGES IN JAVA 11                                   |
+  +-----------------------------------------------------------------------------------+
+
+  LANGUAGE CHANGES:
+  1.  Local Variable Type Inference in Lambda  (var in lambda params)
+
+  STRING API:
+  2.  isBlank()
+  3.  strip(), stripLeading(), stripTrailing()
+  4.  repeat(n)
+  5.  lines()
+
+  FILE API:
+  6.  Files.readString()
+  7.  Files.writeString()
+
+  COLLECTION API:
+  8.  Collection.toArray(IntFunction)
+
+  OPTIONAL API:
+  9.  Optional.isEmpty()
+
+  HTTP CLIENT:
+  10. New HttpClient API  (java.net.http)  -- standardized from Java 9 incubator
+
+  PREDICATE:
+  11. Predicate.not()
+
+  PATTERN:
+  12. Pattern.asMatchPredicate()
+
+  RUNNING:
+  13. Single-file source-code programs  (run .java directly without javac)
+
+  REMOVED / DEPRECATED:
+  14. Java EE and CORBA modules removed
+  15. Nashorn JavaScript Engine deprecated
+  16. Thread.destroy() and Thread.stop(Throwable) removed
+
+  PERFORMANCE & GC:
+  17. Epsilon GC  (no-op garbage collector)
+  18. ZGC  (Z Garbage Collector)  -- experimental
+  19. Flight Recorder open-sourced  (JFR)
+
+  SECURITY:
+  20. TLS 1.3 support
+  21. ChaCha20 and Poly1305 crypto algorithms
+
+  OTHER:
+  22. Unicode 10 support
+  23. Nest-Based Access Control
+  24. Dynamic Class-File Constants  (JVMTI)
+  25. Aarch64 intrinsics
+```
+
+---
+
+## 1. var in Lambda Parameters
+
+```java
+// Java 8 lambdas -- type inferred, no annotation possible:
+list.forEach(s -> System.out.println(s));
+
+// Java 11 -- var allowed in lambda params
+// WHY: lets you add annotations on lambda parameters
+list.forEach((var s) -> System.out.println(s));
+
+// REAL USE -- adding annotation (e.g. @NotNull from static analysis):
+list.forEach((@NotNull var s) -> System.out.println(s.toUpperCase()));
+
+// Without var, there was no way to annotate lambda params.
+// var here is just a placeholder to allow the annotation syntax.
+
+// RULES:
+// 1. If one param uses var, ALL params must use var
+list.stream().filter((var s) -> s.length() > 3);   // OK
+
+// 2. Can't mix var and explicit types
+// (var s, String t) -> ...   // COMPILE ERROR
+
+// 3. Can't mix var and no-type
+// (var s, t) -> ...          // COMPILE ERROR
+
+// 4. Parens required when using var (already required for multi-param)
+// var s -> s.length()        // COMPILE ERROR -- must use (var s)
+```
+
+---
+
+## 2-5. String API Additions
+
+```java
+// ── isBlank() ─────────────────────────────────────────────────────────
+// Returns true if string is empty or contains only whitespace
+// Unicode-aware (unlike isEmpty())
+
+"".isBlank()          // true
+"   ".isBlank()       // true
+"\t\n".isBlank()      // true
+"hello".isBlank()     // false
+" hi ".isBlank()      // false
+
+// vs isEmpty():
+"   ".isEmpty()       // false  (has characters)
+"   ".isBlank()       // true   (only whitespace)
+
+
+// ── strip() / stripLeading() / stripTrailing() ────────────────────────
+// Unicode-aware whitespace removal
+// Different from trim() which only removes ASCII whitespace (<= \u0020)
+
+String s = "  hello world  ";
+s.strip()          // "hello world"
+s.stripLeading()   // "hello world  "
+s.stripTrailing()  // "  hello world"
+
+// trim() vs strip():
+// trim() -- removes chars <= \u0020 (ASCII space, tab, newline etc.)
+// strip() -- removes Unicode whitespace (\u2000, \u3000 etc.) too
+// strip() is the Unicode-correct version. Prefer strip() over trim().
+
+String unicode = "\u2003hello\u2003";  // em space (Unicode whitespace)
+unicode.trim()          // "\u2003hello\u2003"  -- NOT removed by trim
+unicode.strip()         // "hello"              -- removed by strip
+
+
+// ── repeat(n) ─────────────────────────────────────────────────────────
+"ha".repeat(3)          // "hahaha"
+"-".repeat(20)          // "--------------------"
+"abc".repeat(0)         // ""
+// throws IllegalArgumentException if n < 0
+
+
+// ── lines() ───────────────────────────────────────────────────────────
+// Returns a Stream<String> of lines, split by line terminators
+// Handles \n, \r, \r\n
+
+String text = "line1\nline2\nline3";
+text.lines()
+    .forEach(System.out::println);
+// line1
+// line2
+// line3
+
+long count = "a\nb\nc".lines().count();   // 3
+
+// vs split("\n"):
+// lines() is lazy (Stream), handles all line terminators,
+// does NOT include trailing empty string for trailing newline
+"a\nb\n".split("\n").length   // 2
+"a\nb\n".lines().count()      // 2  (consistent)
+
+
+// INTERVIEW TRICK:
+// Q: "What is the difference between trim() and strip()?"
+// A: trim() removes ASCII whitespace only (char <= \u0020).
+//    strip() removes Unicode whitespace (all chars where Character.isWhitespace() is true).
+//    strip() is the Java 11 Unicode-correct replacement for trim().
+//    Always use strip() in new code.
+```
+
+---
+
+## 6-7. Files API Additions
+
+```java
+// ── Files.readString() ────────────────────────────────────────────────
+// Read entire file content as String in one call
+
+// Before Java 11:
+byte[] bytes = Files.readAllBytes(path);
+String content = new String(bytes, StandardCharsets.UTF_8);
+
+// Java 11:
+String content = Files.readString(Path.of("order.txt"));
+
+// With charset:
+String content2 = Files.readString(Path.of("order.txt"), StandardCharsets.ISO_8859_1);
+
+
+// ── Files.writeString() ───────────────────────────────────────────────
+// Write String to file in one call
+
+// Before Java 11:
+Files.write(path, content.getBytes(StandardCharsets.UTF_8));
+
+// Java 11:
+Files.writeString(Path.of("output.txt"), "Hello Manoj");
+
+// With options:
+Files.writeString(
+    Path.of("output.txt"),
+    "Appended content",
+    StandardCharsets.UTF_8,
+    StandardOpenOption.APPEND,
+    StandardOpenOption.CREATE
+);
+
+// BOTH throw IOException -- must handle.
+// Both are convenience methods -- internally delegate to existing NIO APIs.
+```
+
+---
+
+## 8. Collection.toArray(IntFunction)
+
+```java
+// Before Java 11:
+List<String> list = Arrays.asList("a", "b", "c");
+
+// Old way -- unchecked cast or reflection:
+String[] arr1 = list.toArray(new String[0]);   // still works
+String[] arr2 = (String[]) list.toArray();      // returns Object[], needs cast
+
+// Java 11 -- pass constructor reference as IntFunction:
+String[] arr3 = list.toArray(String[]::new);    // clean, type-safe
+
+// Works because toArray(IntFunction<T[]> generator) creates array of right type
+// Equivalent to:
+String[] arr4 = list.toArray(n -> new String[n]);
+
+// Also works with streams:
+String[] arr5 = list.stream().toArray(String[]::new);  // was already in Java 8
+// The Collection.toArray(IntFunction) is new in Java 11
+```
+
+---
+
+## 9. Optional.isEmpty()
+
+```java
+// Java 8 had isPresent() -- Java 11 adds isEmpty() for readability
+
+Optional<String> opt = Optional.empty();
+
+// Java 8:
+if (!opt.isPresent()) { ... }          // double negation, hard to read
+
+// Java 11:
+if (opt.isEmpty()) { ... }             // cleaner
+
+// Use cases:
+Optional<Order> order = orderRepository.findById(id);
+if (order.isEmpty()) {
+    throw new NotFoundException("Order not found: " + id);
+}
+
+// In streams:
+list.stream()
+    .map(this::findOrder)              // returns Optional<Order>
+    .filter(Optional::isEmpty)         // filter empty optionals
+    .count();                          // count missing orders
+```
+
+---
+
+## 10. New HttpClient API — java.net.http
+
+```java
+// BEFORE Java 11:
+// HttpURLConnection -- verbose, clunky, no async support
+// Had to use Apache HttpClient or OkHttp for decent HTTP
+
+// JAVA 11: java.net.http.HttpClient -- built-in, modern, supports HTTP/2
+
+// ── Synchronous GET ───────────────────────────────────────────────────
+HttpClient client = HttpClient.newHttpClient();
+
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("https://api.example.com/orders"))
+    .header("Authorization", "Bearer token123")
+    .GET()
+    .build();
+
+HttpResponse<String> response = client.send(request,
+    HttpResponse.BodyHandlers.ofString());
+
+response.statusCode()   // 200
+response.body()         // JSON string
+response.headers()      // HttpHeaders
+
+
+// ── Synchronous POST ──────────────────────────────────────────────────
+HttpRequest postRequest = HttpRequest.newBuilder()
+    .uri(URI.create("https://api.example.com/orders"))
+    .header("Content-Type", "application/json")
+    .POST(HttpRequest.BodyPublishers.ofString("""
+        {"productId":"P1","quantity":2}
+        """))
+    .timeout(Duration.ofSeconds(10))
+    .build();
+
+HttpResponse<String> postResponse = client.send(postRequest,
+    HttpResponse.BodyHandlers.ofString());
+
+
+// ── Asynchronous GET ─────────────────────────────────────────────────
+HttpClient asyncClient = HttpClient.newBuilder()
+    .connectTimeout(Duration.ofSeconds(5))
+    .followRedirects(HttpClient.Redirect.NORMAL)
+    .build();
+
+CompletableFuture<HttpResponse<String>> futureResponse =
+    asyncClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+
+futureResponse
+    .thenApply(HttpResponse::body)
+    .thenAccept(System.out::println)
+    .join();
+
+
+// ── HTTP/2 support ────────────────────────────────────────────────────
+HttpClient http2Client = HttpClient.newBuilder()
+    .version(HttpClient.Version.HTTP_2)    // prefer HTTP/2, fall back to HTTP/1.1
+    .build();
+
+
+// ── BodyHandlers ─────────────────────────────────────────────────────
+HttpResponse.BodyHandlers.ofString()         // response as String
+HttpResponse.BodyHandlers.ofByteArray()      // response as byte[]
+HttpResponse.BodyHandlers.ofFile(path)       // save to file
+HttpResponse.BodyHandlers.ofLines()          // response as Stream<String>
+HttpResponse.BodyHandlers.discarding()       // ignore body (status check only)
+
+
+// ── BodyPublishers ────────────────────────────────────────────────────
+HttpRequest.BodyPublishers.ofString("body")
+HttpRequest.BodyPublishers.ofByteArray(bytes)
+HttpRequest.BodyPublishers.ofFile(path)
+HttpRequest.BodyPublishers.noBody()           // for GET requests
+
+
+// INTERVIEW TRICK:
+// Q: "What are the advantages of Java 11 HttpClient over HttpURLConnection?"
+// A: 1. HTTP/2 support (multiplexing, header compression)
+//    2. Async support via CompletableFuture (sendAsync)
+//    3. WebSocket support
+//    4. Fluent builder API -- readable and clean
+//    5. Built-in timeout support
+//    6. Automatic redirect following
+//    7. No external dependency (unlike Apache HttpClient)
+```
+
+---
+
+## 11. Predicate.not()
+
+```java
+// Java 8 -- to negate a method reference, needed workaround:
+list.stream()
+    .filter(s -> !s.isBlank())         // works but verbose
+    .collect(Collectors.toList());
+
+// Or with Predicate:
+list.stream()
+    .filter(((Predicate<String>) String::isBlank).negate())  // ugly
+    .collect(Collectors.toList());
+
+// Java 11 -- Predicate.not() wraps any predicate/method ref:
+list.stream()
+    .filter(Predicate.not(String::isBlank))    // clean
+    .collect(Collectors.toList());
+
+// More examples:
+list.stream().filter(Predicate.not(String::isEmpty));
+optionals.stream().filter(Predicate.not(Optional::isEmpty));
+
+// Custom predicate:
+Predicate<String> isShort = s -> s.length() < 5;
+list.stream().filter(Predicate.not(isShort));
+```
+
+---
+
+## 12. Pattern.asMatchPredicate()
+
+```java
+// Java 8 had Pattern.asPredicate() -- true if pattern found ANYWHERE in string
+
+// Java 11 adds asMatchPredicate() -- true only if pattern matches ENTIRE string
+
+Pattern pattern = Pattern.compile("[A-Z]{2}[0-9]{4}");
+
+// asPredicate() -- finds match anywhere:
+Predicate<String> contains = pattern.asPredicate();
+contains.test("ORDER AB1234 DONE")  // true (found in middle)
+contains.test("AB1234")             // true
+
+// asMatchPredicate() -- must match WHOLE string:
+Predicate<String> matches = pattern.asMatchPredicate();
+matches.test("ORDER AB1234 DONE")   // false (not whole string)
+matches.test("AB1234")              // true
+
+// Real use -- filter valid order codes:
+List<String> validCodes = codes.stream()
+    .filter(Pattern.compile("^ORD-[0-9]{6}$").asMatchPredicate())
+    .collect(Collectors.toList());
+```
+
+---
+
+## 13. Single-File Source Code Programs
+
+```java
+// BEFORE Java 11:
+// Must compile then run:
+// javac Hello.java
+// java Hello
+
+// JAVA 11:
+// Run directly without compiling first:
+// java Hello.java
+
+// Hello.java:
+public class Hello {
+    public static void main(String[] args) {
+        System.out.println("Hello from Java 11!");
+    }
+}
+
+// Terminal:
+// $ java Hello.java
+// Hello from Java 11!
+
+// RULES:
+// 1. Only single file -- no other .java files
+// 2. First class in file is the one that runs
+// 3. Class does NOT need to be public
+// 4. No compilation artifact (.class) created -- compiled in-memory
+// 5. Classpath can still be used: java -cp lib.jar Hello.java
+
+// SHEBANG support (Unix/Linux):
+// First line of file: #!/usr/bin/java --source 11
+// Make file executable: chmod +x myscript
+// Run: ./myscript
+
+// USE CASE: scripting, quick experiments, teaching, prototyping
+// NOT for production -- single file only
+
+// INTERVIEW TRICK:
+// Q: "Can you run Java without compiling in Java 11?"
+// A: Yes, for single-file programs. java Hello.java compiles in-memory
+//    and runs immediately. No .class file is created.
+//    Useful for scripting and quick prototyping.
+//    Production code still needs proper compilation.
+```
+
+---
+
+## 14. Removed Modules — Java EE and CORBA
+
+```
+  REMOVED IN JAVA 11 (were deprecated in Java 9):
+  =================================================
+
+  Module              What it was              Replacement
+  ──────────────────────────────────────────────────────────────────────
+  java.xml.ws         JAX-WS (SOAP web svcs)  Jakarta EE / Apache CXF
+  java.xml.bind       JAXB (XML binding)       jakarta.xml.bind-api
+  java.activation     JAF (data handlers)      jakarta.activation
+  java.xml.ws.annotation  WS annotations       Jakarta EE
+  java.corba          CORBA support            Third-party CORBA libs
+  java.transaction    JTA (transactions)       Jakarta Transactions
+  java.se.ee          Meta-module for above    —
+
+  IMPACT:
+  =======
+  Any code using javax.xml.bind.*, javax.jws.*, javax.activation.*
+  will get ClassNotFoundException after upgrading to Java 11.
+
+  FIX -- add explicit dependency in pom.xml:
+  <dependency>
+      <groupId>jakarta.xml.bind</groupId>
+      <artifactId>jakarta.xml.bind-api</artifactId>
+      <version>3.0.1</version>
+  </dependency>
+  <dependency>
+      <groupId>com.sun.xml.bind</groupId>
+      <artifactId>jaxb-impl</artifactId>
+      <version>3.0.1</version>
+  </dependency>
+
+  MOST COMMON BREAKAGE in Java 8 -> Java 11 migration:
+  JAXB (javax.xml.bind) was used heavily for XML marshalling/unmarshalling.
+  Spring Boot 2.x users needed to add explicit JAXB dependency.
+```
+
+---
+
+## 15. Nashorn Deprecated
+
+```
+  Java 8:  Nashorn introduced (replaced Rhino JS engine)
+  Java 11: Nashorn DEPRECATED
+  Java 15: Nashorn REMOVED
+
+  WHY DEPRECATED:
+  ===============
+  - ECMAScript evolves faster than JDK release cycle
+  - Hard to keep up with ES6, ES7, ES8 features
+  - GraalVM Polyglot API is the modern replacement
+  - Most JS-in-Java use cases moved to GraalVM
+
+  REPLACEMENT: GraalVM with Polyglot API
+  import org.graalvm.polyglot.*;
+  try (Context context = Context.create()) {
+      context.eval("js", "print('Hello from GraalVM JS')");
+  }
+```
+
+---
+
+## 16. Thread Methods Removed
+
+```java
+// REMOVED in Java 11:
+// Thread.destroy()       -- was never implemented, always threw UnsupportedOperationException
+// Thread.stop(Throwable) -- dangerous, could leave objects in inconsistent state
+
+// Thread.stop() (no-arg) is still present but deprecated since Java 1.2
+
+// SAFE ALTERNATIVES:
+// Use interrupt() + check isInterrupted() in the thread:
+Thread worker = new Thread(() -> {
+    while (!Thread.currentThread().isInterrupted()) {
+        doWork();
+    }
+});
+worker.start();
+worker.interrupt();  // signal thread to stop
+```
+
+---
+
+## 17. Epsilon GC
+
+```
+  Epsilon = "No-Op" Garbage Collector
+  Allocates memory but NEVER collects garbage.
+  JVM throws OutOfMemoryError when heap is full.
+
+  Enable: -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC
+
+  USE CASES:
+  ==========
+  1. Performance testing -- measure allocation rate without GC pauses
+  2. Short-lived programs -- allocate, use, exit (no GC needed)
+  3. GC overhead benchmarking -- compare app behavior with vs without GC
+  4. Latency-critical systems -- guaranteed zero GC pause (accept OOM risk)
+
+  NOT for production applications with long runtimes.
+
+  INTERVIEW TRICK:
+  Q: "What is Epsilon GC and why would you ever use it?"
+  A: No-op GC -- allocates but never collects.
+     Used for performance benchmarking (isolate app cost from GC cost),
+     latency-critical systems that cannot tolerate GC pauses,
+     and short-lived tools that exit before heap fills.
+```
+
+---
+
+## 18. ZGC (Z Garbage Collector)
+
+```
+  Java 11: ZGC introduced as EXPERIMENTAL
+  Java 15: ZGC production-ready
+
+  Enable: -XX:+UnlockExperimentalVMOptions -XX:+UseZGC
+
+  KEY PROPERTIES:
+  ===============
+  - Concurrent: GC runs concurrently with application threads
+  - Sub-millisecond max pause times (< 1ms)
+  - Scales from MBs to TBs of heap
+  - Handles massive heaps without proportional pause increase
+  - Uses colored pointers (64-bit only) for concurrent marking
+
+  vs G1GC (default in Java 9+):
+  G1GC:  pause times ~100-200ms, good throughput, default
+  ZGC:   pause times < 1ms, some throughput tradeoff, large/latency-sensitive heaps
+
+  vs Shenandoah (Red Hat):
+  Both aim for low latency, ZGC uses different approach (colored pointers vs Brooks pointers)
+
+  INTERVIEW TRICK:
+  Q: "What GC was introduced in Java 11?"
+  A: ZGC (Z Garbage Collector) -- experimental in Java 11, production in Java 15.
+     Designed for ultra-low latency (< 1ms pauses) and massive heaps (TBs).
+     Uses colored pointers for concurrent GC without stopping app threads.
+```
+
+---
+
+## 19. Flight Recorder (JFR) Open-Sourced
+
+```
+  Java Flight Recorder was a commercial Oracle JDK feature.
+  Java 11: open-sourced and available in OpenJDK for free.
+
+  WHAT IT IS:
+  ===========
+  Low-overhead profiling and event recording framework built into JVM.
+  Records: GC events, thread activity, method profiling, heap stats,
+           I/O, exceptions, class loading, compilation events.
+
+  Enable at startup:
+  java -XX:StartFlightRecording=duration=60s,filename=recording.jfr MyApp
+
+  Or dynamically with jcmd:
+  jcmd <pid> JFR.start duration=60s filename=recording.jfr
+  jcmd <pid> JFR.dump filename=recording.jfr
+  jcmd <pid> JFR.stop
+
+  Analyze with:
+  - JDK Mission Control (JMC) -- GUI analysis tool
+  - Parse programmatically via RecordingFile API
+
+  OVERHEAD: < 1% in most cases (designed for always-on production use)
+
+  CUSTOM EVENTS:
+  @Label("Order Processed")
+  @Category("Business")
+  @StackTrace(false)
+  public class OrderEvent extends jdk.jfr.Event {
+      @Label("Order ID")
+      String orderId;
+      @Label("Amount")
+      double amount;
+  }
+
+  // Usage:
+  OrderEvent event = new OrderEvent();
+  event.orderId = "ORD-001";
+  event.amount = 999.99;
+  event.commit();  // recorded to JFR stream
+```
+
+---
+
+## 20. TLS 1.3
+
+```
+  Java 11 adds full TLS 1.3 support (Transport Layer Security).
+
+  TLS 1.3 vs TLS 1.2:
+  =====================
+  Handshake:   1-RTT (one round trip) vs 2-RTT in TLS 1.2
+               0-RTT session resumption (faster reconnects)
+  Security:    Removed weak algorithms (RC4, DES, 3DES, SHA-1 for cert signing)
+               Perfect Forward Secrecy mandatory
+               Simpler cipher suite negotiation
+  Performance: Faster handshake = lower latency for HTTPS connections
+
+  Enabled by default in Java 11.
+  SSLContext uses TLS 1.3 when both client and server support it.
+
+  // Force TLS 1.3:
+  SSLContext context = SSLContext.getInstance("TLSv1.3");
+```
+
+---
+
+## 21. New Crypto Algorithms
+
+```java
+  // ChaCha20 and ChaCha20-Poly1305 stream ciphers added.
+
+  // WHY: AES requires hardware acceleration (AES-NI instruction).
+  //      On devices WITHOUT AES-NI (older mobile, IoT), AES is slow.
+  //      ChaCha20 is fast in SOFTWARE -- no special hardware needed.
+  //      Used by TLS 1.3, WireGuard, Google QUIC.
+
+  // Usage:
+  Cipher cipher = Cipher.getInstance("ChaCha20-Poly1305");
+  // ChaCha20-Poly1305 is AEAD (Authenticated Encryption with Associated Data)
+  // provides both encryption and authentication in one pass
+```
+
+---
+
+## 22. Nest-Based Access Control
+
+```java
+  // BEFORE Java 11:
+  // Nested classes (inner classes) accessing private members of outer class
+  // required synthetic bridge methods generated by compiler.
+
+  class Outer {
+      private int secret = 42;
+
+      class Inner {
+          void access() {
+              System.out.println(secret);  // outer private field
+          }
+      }
+  }
+
+  // Java 8: compiler generated a package-private synthetic accessor method
+  //         access$000(Outer outer) -- visible via reflection, security concern
+
+  // Java 11: JVM natively understands nests.
+  //          Inner and Outer are "nestmates".
+  //          No synthetic methods needed.
+  //          Direct private access at bytecode level.
+
+  // API to inspect:
+  Outer.class.getNestHost()           // Outer.class
+  Outer.Inner.class.getNestHost()     // Outer.class
+  Outer.class.getNestMembers()        // [Outer.class, Outer.Inner.class]
+  Outer.class.isNestmateOf(Outer.Inner.class)  // true
+
+  // BENEFIT: Cleaner bytecode, better security, reflection accuracy.
+```
+
+---
+
+## Comparison — Java 8 vs Java 11 Key Differences
+
+```
+  FEATURE                    JAVA 8              JAVA 11
+  ─────────────────────────────────────────────────────────────────────────
+  LTS status                 Yes (until 2030)    Yes (until 2026/2032)
+  String.isBlank()           No                  Yes
+  String.strip()             No                  Yes (use over trim())
+  String.lines()             No                  Yes
+  String.repeat()            No                  Yes
+  Files.readString()         No                  Yes
+  Files.writeString()        No                  Yes
+  Optional.isEmpty()         No                  Yes
+  Predicate.not()            No                  Yes
+  HttpClient                 No (use 3rd party)  Yes (java.net.http)
+  var in lambda              No                  Yes
+  Single-file run            No                  Yes (java Hello.java)
+  JAXB / JAX-WS              Included            REMOVED (add dependency)
+  Nashorn JS Engine          Available           Deprecated
+  ZGC                        No                  Yes (experimental)
+  Epsilon GC                 No                  Yes
+  Flight Recorder            Commercial only     Free/Open
+  TLS 1.3                    No                  Yes
+  Nest-based access          Synthetic methods   Native JVM support
+  Default GC                 Parallel GC         G1GC
+  PermGen                    Removed in Java 8   Metaspace (continued)
+  Module system              No                  Yes (from Java 9)
+```
+
+---
+
+## Quick-Fire Interview Questions — Java 11
+
+```
+  Q: "What is the difference between strip() and trim()?"
+  A: trim() removes ASCII whitespace (char <= \u0020).
+     strip() removes Unicode whitespace (Character.isWhitespace() = true).
+     strip() is Unicode-correct. Always use strip() in new code.
+
+  Q: "How do you run a Java file without compiling in Java 11?"
+  A: java Hello.java -- single-file programs run directly.
+     Compiled in-memory, no .class file created.
+     Only works for single-file programs.
+
+  Q: "What was removed in Java 11 that breaks Java 8 code?"
+  A: JAXB (javax.xml.bind), JAX-WS (javax.xml.ws), JAF (javax.activation),
+     CORBA, JTA removed. Must add as explicit Maven/Gradle dependencies.
+     Thread.destroy() and Thread.stop(Throwable) also removed.
+
+  Q: "What is Predicate.not() used for?"
+  A: Clean negation of method references in streams.
+     filter(Predicate.not(String::isBlank)) instead of
+     filter(s -> !s.isBlank()).
+
+  Q: "What is the new HttpClient in Java 11?"
+  A: java.net.http.HttpClient -- modern replacement for HttpURLConnection.
+     Supports HTTP/2, WebSocket, async via CompletableFuture,
+     fluent builder API, built-in timeout. No external dependency needed.
+
+  Q: "What is ZGC?"
+  A: Z Garbage Collector -- experimental in Java 11, production in Java 15.
+     Ultra-low pause times (< 1ms), scales to TB heaps.
+     Concurrent GC using colored pointers.
+
+  Q: "What is Epsilon GC?"
+  A: No-op GC -- allocates memory, never collects.
+     OOM when heap fills. Used for benchmarking and short-lived apps.
+
+  Q: "What is Nest-Based Access Control?"
+  A: JVM natively understands nested classes (nestmates).
+     No more synthetic bridge methods for private member access.
+     Cleaner bytecode, better reflection accuracy.
+
+  Q: "What happened to Flight Recorder in Java 11?"
+  A: JFR was a paid Oracle JDK feature. Became free and open-source
+     in Java 11 (OpenJDK). Low-overhead always-on production profiling.
+
+  Q: "What is var in lambda and why was it added?"
+  A: Allows using var as lambda parameter type.
+     Main purpose: enables annotations on lambda parameters.
+     (@NotNull var s) -> s.toUpperCase()
+     Without var, lambda parameters cannot be annotated.
+```
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

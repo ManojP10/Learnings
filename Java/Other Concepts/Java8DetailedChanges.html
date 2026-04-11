@@ -1,0 +1,1393 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's everything that changed in Java 8 — complete and in depth.
+
+---
+
+## Java 8 — Big Picture of Changes
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                          ALL CHANGES IN JAVA 8                                    |
+  +-----------------------------------------------------------------------------------+
+
+  1.  Lambda Expressions
+  2.  Functional Interfaces  (@FunctionalInterface)
+  3.  Stream API
+  4.  Default & Static Methods in Interfaces
+  5.  Optional<T>
+  6.  New Date & Time API  (java.time)
+  7.  Method References
+  8.  Constructor References
+  9.  CompletableFuture
+  10. Nashorn JavaScript Engine
+  11. Base64 Encoding/Decoding
+  12. Arrays.parallelSort()
+  13. StringJoiner
+  14. Collections API additions  (forEach, removeIf, replaceAll, sort, merge, compute)
+  15. Map API additions
+  16. Comparator enhancements
+  17. Files API additions  (lines(), walk(), find())
+  18. Repeating Annotations  (@Repeatable)
+  19. Type Annotations
+  20. PermGen removed  --> Metaspace
+  21. HashMap internal changes  (treeification)
+  22. Concurrency additions  (LongAdder, StampedLock, CompletableFuture)
+```
+
+---
+
+## 1. Lambda Expressions
+
+```java
+// BEFORE Java 8 -- anonymous inner class
+Runnable r = new Runnable() {
+    @Override
+    public void run() {
+        System.out.println("Running");
+    }
+};
+
+// AFTER Java 8 -- lambda
+Runnable r = () -> System.out.println("Running");
+
+
+// SYNTAX:
+// (parameters) -> expression
+// (parameters) -> { statements; }
+
+// No params:
+() -> System.out.println("hello")
+
+// One param (parens optional):
+x -> x * x
+(x) -> x * x
+
+// Multiple params:
+(x, y) -> x + y
+
+// With explicit types:
+(int x, int y) -> x + y
+
+// Multi-line body:
+(x, y) -> {
+    int sum = x + y;
+    return sum;
+}
+
+// REAL EXAMPLES:
+List<String> names = Arrays.asList("Manoj", "Alice", "Bob");
+
+// Comparator before:
+Collections.sort(names, new Comparator<String>() {
+    public int compare(String a, String b) { return a.compareTo(b); }
+});
+
+// Comparator after:
+Collections.sort(names, (a, b) -> a.compareTo(b));
+// even shorter:
+names.sort(String::compareTo);
+
+
+// WHAT LAMBDAS CAPTURE:
+// 1. Local variables -- must be effectively final (not reassigned)
+int multiplier = 3;              // effectively final
+Function<Integer, Integer> fn = x -> x * multiplier;
+// multiplier = 4;               // would cause compile error
+
+// 2. Instance variables -- can read and write (captured via 'this')
+// 3. Static variables -- can read and write
+
+
+// INTERVIEW TRICK:
+// Q: "What is 'effectively final'?"
+// A: A variable that is NEVER reassigned after initialization.
+//    Java 8 does not require the 'final' keyword explicitly.
+//    If you try to reassign it, compiler error:
+//    "local variables referenced from lambda must be final or effectively final"
+
+// Q: "Can lambda throw checked exceptions?"
+// A: Only if the functional interface's method declares them.
+//    Runnable.run() throws nothing --> lambda can't throw checked exception.
+//    Callable.call() throws Exception --> lambda can throw checked exception.
+```
+
+---
+
+## 2. Functional Interfaces
+
+```java
+// A functional interface has EXACTLY ONE abstract method.
+// @FunctionalInterface annotation enforces this at compile time.
+
+@FunctionalInterface
+public interface MyFunction {
+    int apply(int x);           // single abstract method
+    // can have default methods, static methods -- still functional
+}
+
+
+// BUILT-IN FUNCTIONAL INTERFACES (java.util.function):
+// =====================================================
+
+// Function<T, R> -- takes T, returns R
+Function<String, Integer> length = s -> s.length();
+length.apply("hello");          // 5
+
+// andThen: f.andThen(g) = g(f(x))
+Function<String, Integer> parse = Integer::parseInt;
+Function<Integer, Integer> doubled = x -> x * 2;
+Function<String, Integer> parseAndDouble = parse.andThen(doubled);
+parseAndDouble.apply("5");      // 10
+
+// compose: f.compose(g) = f(g(x))  (opposite of andThen)
+Function<Integer, Integer> addOne = x -> x + 1;
+Function<Integer, Integer> triple = x -> x * 3;
+triple.compose(addOne).apply(2);  // triple(addOne(2)) = triple(3) = 9
+
+
+// BiFunction<T, U, R> -- takes two inputs, returns R
+BiFunction<String, Integer, String> repeat = (s, n) -> s.repeat(n);
+repeat.apply("ha", 3);          // "hahaha"
+
+
+// Predicate<T> -- takes T, returns boolean
+Predicate<String> isEmpty   = String::isEmpty;
+Predicate<String> isNotEmpty = isEmpty.negate();
+Predicate<String> longStr   = s -> s.length() > 5;
+
+isEmpty.test("");                // true
+isNotEmpty.test("hello");        // true
+isEmpty.and(longStr).test("hi"); // false (and = both must be true)
+isEmpty.or(longStr).test("hi");  // false (or = either true)
+
+// BiPredicate<T, U>
+BiPredicate<String, Integer> longerThan = (s, n) -> s.length() > n;
+longerThan.test("hello", 3);     // true
+
+
+// Consumer<T> -- takes T, returns void
+Consumer<String> print    = System.out::println;
+Consumer<String> printUp  = s -> System.out.println(s.toUpperCase());
+print.andThen(printUp).accept("hello"); // prints "hello" then "HELLO"
+
+// BiConsumer<T, U>
+BiConsumer<String, Integer> printTimes = (s, n) -> System.out.println(s.repeat(n));
+
+
+// Supplier<T> -- takes nothing, returns T
+Supplier<List<String>> listFactory = ArrayList::new;
+Supplier<Double>       random      = Math::random;
+Supplier<LocalDate>    today       = LocalDate::now;
+
+
+// UnaryOperator<T> -- Function<T,T> (same input and output type)
+UnaryOperator<String> toUpper = String::toUpperCase;
+UnaryOperator<Integer> square = x -> x * x;
+
+
+// BinaryOperator<T> -- BiFunction<T,T,T>
+BinaryOperator<Integer> add = Integer::sum;
+BinaryOperator<String>  concat = String::concat;
+
+
+// Primitive specializations (avoid boxing overhead):
+IntFunction<String>     intToStr  = i -> "Value: " + i;
+IntPredicate            isEven    = n -> n % 2 == 0;
+IntConsumer             printInt  = System.out::println;
+IntSupplier             getInt    = () -> 42;
+IntUnaryOperator        negate    = x -> -x;
+IntBinaryOperator       multiply  = (a, b) -> a * b;
+ToIntFunction<String>   strLen    = String::length;
+IntToLongFunction       toLong    = i -> (long) i;
+// Also: LongXxx, DoubleXxx variants
+
+
+// INTERVIEW TRICK:
+// Q: "Can an interface with only static methods be a functional interface?"
+// A: NO. @FunctionalInterface requires exactly ONE abstract method.
+//    Static methods do not count. Default methods do not count.
+//    Zero abstract methods = not functional. Two+ = compile error.
+
+// Q: "Is Runnable a functional interface?"
+// A: YES. One abstract method: run(). Used as: () -> doWork()
+
+// Q: "Is Comparator a functional interface?"
+// A: YES. One abstract method: compare(). Other methods (reversed, thenComparing)
+//    are default methods -- don't count toward the abstract method requirement.
+```
+
+---
+
+## 3. Stream API
+
+```java
+// Stream = a pipeline of operations on a sequence of elements.
+// NOT a data structure. Does NOT modify the source.
+// Lazy -- intermediate operations execute only when terminal op is called.
+
+
+// CREATING STREAMS:
+List<Integer> nums = Arrays.asList(1,2,3,4,5);
+
+Stream<Integer>  s1 = nums.stream();              // from Collection
+Stream<Integer>  s2 = nums.parallelStream();      // parallel
+Stream<String>   s3 = Stream.of("a","b","c");     // varargs
+Stream<Integer>  s4 = Stream.iterate(0, x -> x+2).limit(5);   // 0,2,4,6,8
+Stream<Double>   s5 = Stream.generate(Math::random).limit(3); // 3 randoms
+Stream<String>   s6 = Arrays.stream(new String[]{"x","y"});   // from array
+Stream<String>   s7 = "hello world".lines();      // lines of a string
+IntStream        s8 = IntStream.range(1, 6);      // 1,2,3,4,5
+IntStream        s9 = IntStream.rangeClosed(1,5); // 1,2,3,4,5
+
+
+// ── INTERMEDIATE OPERATIONS (lazy, return Stream) ─────────────────────
+
+// filter -- keep elements matching predicate
+Stream<Integer> evens = nums.stream().filter(n -> n % 2 == 0); // 2,4
+
+// map -- transform each element
+Stream<String> strs = nums.stream().map(n -> "num:" + n);
+
+// mapToInt / mapToLong / mapToDouble -- avoids boxing
+IntStream lengths = names.stream().mapToInt(String::length);
+
+// flatMap -- flatten nested streams (one-to-many transformation)
+List<List<Integer>> nested = Arrays.asList(
+    Arrays.asList(1,2), Arrays.asList(3,4));
+Stream<Integer> flat = nested.stream()
+    .flatMap(Collection::stream);           // 1,2,3,4
+
+// flatMapToInt / flatMapToLong / flatMapToDouble
+
+// distinct -- removes duplicates (uses equals/hashCode)
+Stream<Integer> unique = Stream.of(1,1,2,2,3).distinct(); // 1,2,3
+
+// sorted -- natural order
+Stream<Integer> sorted = Stream.of(3,1,2).sorted();       // 1,2,3
+Stream<String>  byLen  = names.stream()
+    .sorted(Comparator.comparingInt(String::length));
+
+// peek -- side effect without changing elements (debug tool)
+Stream<Integer> peeked = nums.stream()
+    .peek(n -> System.out.println("before: " + n))
+    .filter(n -> n > 2)
+    .peek(n -> System.out.println("after: " + n));
+
+// limit / skip
+Stream<Integer> first3 = nums.stream().limit(3);           // 1,2,3
+Stream<Integer> skip2  = nums.stream().skip(2);            // 3,4,5
+
+// takeWhile / dropWhile (Java 9 -- mentioned for completeness)
+// Stream.of(1,2,3,4,5).takeWhile(n -> n < 4)  --> 1,2,3
+
+
+// ── TERMINAL OPERATIONS (eager, trigger pipeline) ─────────────────────
+
+// collect -- most versatile terminal op
+List<Integer>   list   = nums.stream().filter(n->n>2).collect(Collectors.toList());
+Set<Integer>    set    = nums.stream().collect(Collectors.toSet());
+String          joined = names.stream().collect(Collectors.joining(", ", "[", "]"));
+Map<Boolean, List<Integer>> partitioned =
+    nums.stream().collect(Collectors.partitioningBy(n -> n % 2 == 0));
+// {false=[1,3,5], true=[2,4]}
+
+Map<Integer, List<String>> grouped =
+    names.stream().collect(Collectors.groupingBy(String::length));
+// {5=[Manoj,Alice], 3=[Bob]}
+
+Map<Integer, Long> countByLength =
+    names.stream().collect(
+        Collectors.groupingBy(String::length, Collectors.counting()));
+
+// Collecting to specific map:
+Map<String, Integer> nameLengths =
+    names.stream().collect(
+        Collectors.toMap(s -> s, String::length));
+
+// toUnmodifiableList/Set/Map (Java 10, mentioned for context)
+
+// forEach
+nums.stream().forEach(System.out::println);
+
+// reduce -- fold elements into one value
+Optional<Integer> sum  = nums.stream().reduce((a, b) -> a + b);
+int sumWithIdentity     = nums.stream().reduce(0, Integer::sum);
+// 0 is identity: reduce(identity, accumulator)
+
+// count
+long count = nums.stream().filter(n -> n > 2).count();  // 3
+
+// min / max
+Optional<Integer> min = nums.stream().min(Comparator.naturalOrder());
+Optional<Integer> max = nums.stream().max(Comparator.naturalOrder());
+
+// findFirst / findAny
+Optional<Integer> first = nums.stream().filter(n->n>2).findFirst(); // 3
+Optional<Integer> any   = nums.parallelStream().findAny();          // any element
+
+// anyMatch / allMatch / noneMatch (short-circuit)
+boolean anyEven  = nums.stream().anyMatch(n -> n % 2 == 0);   // true
+boolean allPos   = nums.stream().allMatch(n -> n > 0);         // true
+boolean noneNeg  = nums.stream().noneMatch(n -> n < 0);        // true
+
+// toArray
+Object[]   arr1 = nums.stream().toArray();
+Integer[]  arr2 = nums.stream().toArray(Integer[]::new);
+
+// sum / average / statistics (on primitive streams)
+int    total = IntStream.rangeClosed(1,5).sum();           // 15
+double avg   = IntStream.rangeClosed(1,5).average().orElse(0); // 3.0
+IntSummaryStatistics stats = IntStream.rangeClosed(1,5).summaryStatistics();
+stats.getMin(); stats.getMax(); stats.getSum(); stats.getAverage(); stats.getCount();
+
+
+// ── PARALLEL STREAMS ──────────────────────────────────────────────────
+// Internally uses ForkJoinPool.commonPool()
+// Splits source via Spliterator, processes chunks in parallel
+
+long count2 = nums.parallelStream()
+    .filter(n -> n % 2 == 0)
+    .count();
+
+// WHEN TO USE:
+// - Large data sets (100k+ elements)
+// - CPU-bound operations (avoid for IO-bound -- threads waste waiting)
+// - No shared mutable state (no synchronized collections)
+// - Order doesn't matter (or use forEachOrdered if it does)
+
+// WHEN NOT TO USE:
+// - Small data -- parallel overhead costs more than it saves
+// - Stateful operations (collecting to same list, incrementing shared counter)
+
+
+// INTERVIEW TRICK:
+// Q: "Are streams lazy?"
+// A: Intermediate operations are lazy -- not executed until terminal op called.
+//    map/filter/sorted etc. do nothing alone.
+//    Terminal op (collect/count/forEach) triggers the whole pipeline.
+//    Short-circuit ops (findFirst, anyMatch, limit) stop early.
+
+// Q: "Can you reuse a Stream?"
+// A: NO. Once a terminal operation is called, stream is CONSUMED.
+//    Calling another operation throws IllegalStateException: "stream already operated upon or closed"
+//    Must create a new Stream from the source.
+
+// Q: "Stream vs Collection?"
+// A: Collection: stores data, can iterate multiple times, eager
+//    Stream: computes on data, single use, lazy, can be parallel
+```
+
+---
+
+## 4. Default and Static Methods in Interfaces
+
+```java
+// BEFORE Java 8: interfaces could only have abstract methods.
+// Adding a new method to an interface BROKE all implementing classes.
+
+// Java 8: interfaces can have:
+// 1. Default methods (with body -- inheritable)
+// 2. Static methods (with body -- not inheritable)
+
+
+// DEFAULT METHOD:
+public interface Vehicle {
+    String getBrand();   // abstract -- must implement
+
+    // default -- implementing classes INHERIT this
+    default String getDescription() {
+        return "Vehicle brand: " + getBrand();
+    }
+
+    // static -- called on interface itself, NOT on instance
+    static Vehicle create(String brand) {
+        return () -> brand;  // lambda implementing getBrand()
+    }
+}
+
+class Car implements Vehicle {
+    @Override
+    public String getBrand() { return "Toyota"; }
+    // getDescription() inherited -- no need to override
+}
+
+// Usage:
+Vehicle car = new Car();
+car.getDescription();      // "Vehicle brand: Toyota"
+Vehicle v = Vehicle.create("Honda");  // static factory
+
+
+// DIAMOND PROBLEM -- default method conflict:
+interface A { default void hello() { System.out.println("A"); } }
+interface B { default void hello() { System.out.println("B"); } }
+
+class C implements A, B {
+    @Override
+    public void hello() {
+        A.super.hello();  // must override and choose one explicitly
+        // OR provide own implementation
+    }
+}
+
+// RESOLUTION RULES:
+// 1. Class/superclass method wins over interface default
+// 2. More specific interface wins over less specific
+// 3. If still ambiguous --> must override explicitly
+
+
+// REAL EXAMPLES from JDK:
+// List.sort() -- added as default method (all List implementations get it free)
+// Iterable.forEach() -- default method (all iterables get forEach)
+// Map.getOrDefault(), Map.putIfAbsent(), Map.computeIfAbsent() -- all default methods
+
+
+// INTERVIEW TRICK:
+// Q: "Why were default methods added?"
+// A: Backward compatibility. Java 8 needed to add stream() and forEach()
+//    to Collection. Without default methods, every class implementing
+//    Collection (ArrayList, LinkedList, etc.) would need to implement
+//    these new methods -- breaking all existing code.
+//    Default methods allow adding new API to interfaces without breaking
+//    existing implementations.
+
+// Q: "Can default methods access instance state?"
+// A: No directly -- they can only call other interface methods (which
+//    implementing class provides). They cannot access fields (interfaces
+//    have no instance fields).
+```
+
+---
+
+## 5. Optional\<T\>
+
+```java
+// Optional is a container that may or may not contain a value.
+// Purpose: explicit API for "this method might return nothing"
+//          eliminate NullPointerException by making null-handling explicit.
+
+
+// CREATING:
+Optional<String> present = Optional.of("hello");       // throws NPE if null
+Optional<String> maybe   = Optional.ofNullable(null);  // safe -- empty if null
+Optional<String> empty   = Optional.empty();
+
+
+// CHECKING AND GETTING:
+optional.isPresent()      // true if value exists
+optional.isEmpty()        // true if empty (Java 11)
+optional.get()            // returns value or throws NoSuchElementException
+
+
+// SAFE ALTERNATIVES TO get():
+optional.orElse("default")                       // return default if empty
+optional.orElseGet(() -> computeDefault())        // lazy default (Supplier)
+optional.orElseThrow()                            // throw NoSuchElementException
+optional.orElseThrow(() -> new CustomException()) // throw custom exception
+
+
+// TRANSFORMING:
+Optional<Integer> length = optional.map(String::length);
+// if empty --> still empty. if present --> applies function.
+
+Optional<String> upper = optional.map(String::toUpperCase);
+
+// flatMap -- when mapping function itself returns Optional
+Optional<String> name = Optional.of("  Manoj  ");
+Optional<String> trimmed = name.flatMap(s ->
+    s.isBlank() ? Optional.empty() : Optional.of(s.trim()));
+
+// filter
+Optional<String> long5 = optional.filter(s -> s.length() > 5);
+
+
+// ifPresent / ifPresentOrElse (Java 9)
+optional.ifPresent(System.out::println);
+optional.ifPresentOrElse(
+    s -> System.out.println("Found: " + s),
+    () -> System.out.println("Not found"));
+
+
+// CHAINING -- real world use:
+Optional<String> city = Optional.ofNullable(order)
+    .map(Order::getCustomer)
+    .map(Customer::getAddress)
+    .map(Address::getCity)
+    .filter(c -> !c.isBlank());
+// No NullPointerException anywhere in this chain
+
+
+// WHAT NOT TO DO:
+// 1. Don't use Optional as method parameter -- use overloading instead
+//    BAD:  void process(Optional<String> name)
+//    GOOD: void process(String name) + void process()
+
+// 2. Don't use Optional for fields -- waste of memory, not serializable
+//    BAD:  private Optional<String> middleName;
+//    GOOD: private String middleName;  // can be null
+
+// 3. Don't use Optional for collections -- return empty collection instead
+//    BAD:  Optional<List<Order>> getOrders()
+//    GOOD: List<Order> getOrders()  // return Collections.emptyList()
+
+// 4. Never call .get() without isPresent() check -- defeats the purpose
+
+
+// INTERVIEW TRICK:
+// Q: "Optional.of() vs Optional.ofNullable()?"
+// A: Optional.of(null) throws NullPointerException immediately.
+//    Optional.ofNullable(null) returns Optional.empty() safely.
+//    Use ofNullable() when value might be null.
+//    Use of() only when you are certain the value is not null.
+
+// Q: "Is Optional serializable?"
+// A: NO. Optional is not Serializable.
+//    Do not use it as entity field or in DTOs that cross network.
+```
+
+---
+
+## 6. New Date & Time API (java.time)
+
+```java
+// PROBLEMS with old API:
+// java.util.Date -- mutable, confusing (month 0-indexed, year = year-1900)
+// java.util.Calendar -- mutable, verbose, not thread-safe
+// SimpleDateFormat -- not thread-safe
+
+// Java 8 java.time (inspired by Joda-Time): immutable, thread-safe, clear API
+
+
+// CORE CLASSES:
+// ─────────────────────────────────────────────────────────────────────
+// LocalDate        -- date only (2025-04-11), no time, no timezone
+// LocalTime        -- time only (10:30:00), no date, no timezone
+// LocalDateTime    -- date + time (2025-04-11T10:30:00), no timezone
+// ZonedDateTime    -- date + time + timezone (2025-04-11T10:30:00+05:30[Asia/Kolkata])
+// Instant          -- machine timestamp (epoch millis, UTC)
+// Duration         -- amount of time (hours, minutes, seconds, nanos)
+// Period           -- amount of date-based time (years, months, days)
+// ZoneId           -- timezone identifier
+// ZoneOffset       -- UTC offset (+05:30)
+// OffsetDateTime   -- date + time + offset (no DST rules)
+// MonthDay         -- month + day (birthday)
+// YearMonth        -- year + month (credit card expiry)
+// DayOfWeek        -- enum: MONDAY...SUNDAY
+// Month            -- enum: JANUARY...DECEMBER
+
+
+// LocalDate:
+LocalDate today     = LocalDate.now();
+LocalDate specific  = LocalDate.of(2025, 4, 11);
+LocalDate parsed    = LocalDate.parse("2025-04-11");
+LocalDate tomorrow  = today.plusDays(1);
+LocalDate lastMonth = today.minusMonths(1);
+LocalDate firstDay  = today.withDayOfMonth(1);
+
+today.getDayOfWeek()      // FRIDAY
+today.getDayOfYear()      // 101
+today.isLeapYear()        // false
+today.isBefore(tomorrow)  // true
+today.isAfter(lastMonth)  // true
+
+// Period between dates:
+Period p = Period.between(LocalDate.of(2000,1,1), today);
+p.getYears();    // 25
+p.getMonths();   // 3
+p.getDays();     // 10
+
+
+// LocalTime:
+LocalTime now     = LocalTime.now();
+LocalTime morning = LocalTime.of(9, 30, 0);
+LocalTime parsed2 = LocalTime.parse("09:30:00");
+LocalTime later   = morning.plusHours(2).plusMinutes(30); // 12:00
+
+
+// LocalDateTime:
+LocalDateTime ldt  = LocalDateTime.now();
+LocalDateTime ldt2 = LocalDateTime.of(2025, 4, 11, 10, 30);
+LocalDateTime ldt3 = LocalDate.of(2025,4,11).atTime(10, 30);
+LocalDateTime ldt4 = LocalTime.of(10,30).atDate(LocalDate.now());
+
+
+// ZonedDateTime:
+ZoneId india    = ZoneId.of("Asia/Kolkata");
+ZoneId utc      = ZoneId.of("UTC");
+ZoneId.getAvailableZoneIds()  // all zone IDs
+
+ZonedDateTime zdt = ZonedDateTime.now(india);
+ZonedDateTime converted = zdt.withZoneSameInstant(ZoneId.of("America/New_York"));
+
+
+// Instant (machine time):
+Instant now2    = Instant.now();               // current UTC timestamp
+Instant epoch   = Instant.ofEpochMilli(0L);   // 1970-01-01T00:00:00Z
+long millis     = now2.toEpochMilli();
+
+// Convert between Instant and LocalDateTime:
+LocalDateTime ldt5 = LocalDateTime.ofInstant(Instant.now(), ZoneId.systemDefault());
+Instant inst       = ldt.toInstant(ZoneOffset.of("+05:30"));
+
+
+// Duration (time-based):
+Duration d1 = Duration.ofHours(2);
+Duration d2 = Duration.ofMinutes(90);
+Duration d3 = Duration.between(LocalTime.of(9,0), LocalTime.of(17,30));
+d3.toHours();      // 8
+d3.toMinutes();    // 510
+d3.toSeconds();    // 30600
+
+
+// DateTimeFormatter:
+DateTimeFormatter fmt1 = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+DateTimeFormatter fmt2 = DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm");
+DateTimeFormatter iso  = DateTimeFormatter.ISO_LOCAL_DATE;
+
+String formatted = LocalDate.now().format(fmt1);           // "11/04/2025"
+LocalDate parsed3 = LocalDate.parse("11/04/2025", fmt1);   // thread-safe
+
+
+// TemporalAdjusters -- powerful date manipulation:
+LocalDate firstMondayOfMonth = today.with(TemporalAdjusters.firstInMonth(DayOfWeek.MONDAY));
+LocalDate lastDayOfMonth     = today.with(TemporalAdjusters.lastDayOfMonth());
+LocalDate nextFriday         = today.with(TemporalAdjusters.next(DayOfWeek.FRIDAY));
+
+
+// COMPARISON TABLE -- Old vs New:
+// java.util.Date   --> java.time.Instant (for machine timestamps)
+// java.util.Date   --> java.time.LocalDateTime (for display)
+// Calendar         --> ZonedDateTime
+// SimpleDateFormat --> DateTimeFormatter (thread-safe!)
+// Date.getTime()   --> Instant.toEpochMilli()
+
+
+// INTERVIEW TRICK:
+// Q: "Why was the old Date/Calendar API replaced?"
+// A: 1. java.util.Date is mutable -- not thread-safe, can be changed externally
+//    2. Month was 0-indexed (January=0) -- confusing and error-prone
+//    3. Year was offset from 1900 -- date.getYear() returns 125 for 2025
+//    4. SimpleDateFormat is not thread-safe -- shared instance causes bugs
+//    5. No clear separation between date-only, time-only, datetime concepts
+
+// Q: "LocalDateTime vs ZonedDateTime -- when to use which?"
+// A: LocalDateTime -- for human-readable display with no timezone concern
+//                     (e.g. a scheduled meeting time that stays at 9am regardless of DST)
+//    ZonedDateTime -- when timezone matters (e.g. storing user events,
+//                     timestamps for global systems, converting between zones)
+//    Instant       -- for machine timestamps, logging, duration measurement
+//                     (always UTC, unambiguous)
+```
+
+---
+
+## 7. Method References
+
+```java
+// Method reference = shorthand for lambda that calls a single method
+// Syntax: ClassName::methodName  or  instance::methodName
+
+
+// 4 TYPES:
+
+// TYPE 1: Static method reference  ClassName::staticMethod
+Function<String, Integer> parse  = Integer::parseInt;
+// same as: s -> Integer.parseInt(s)
+
+BiFunction<String, String, String> concat = String::join;
+// same as: (delim, s) -> String.join(delim, s)  -- wait, check signature
+// String.join(delim, elements) -- matches BiFunction<String,String,String>
+
+
+// TYPE 2: Instance method on a SPECIFIC instance  instance::method
+String prefix = "Hello ";
+Function<String, String> greet = prefix::concat;
+greet.apply("Manoj");    // "Hello Manoj"
+// same as: s -> prefix.concat(s)
+
+PrintStream out = System.out;
+Consumer<String> printer = out::println;
+// same as: s -> System.out.println(s)
+
+
+// TYPE 3: Instance method on an ARBITRARY instance of a type  ClassName::instanceMethod
+Function<String, String>     toUpper  = String::toUpperCase;
+// same as: s -> s.toUpperCase()
+// The first param becomes the receiver object
+
+Function<String, Integer>    length   = String::length;
+Predicate<String>            isEmpty  = String::isEmpty;
+BiFunction<String,String,Boolean> startsWith = String::startsWith;
+// same as: (s, prefix) -> s.startsWith(prefix)
+
+
+// TYPE 4: Constructor reference  ClassName::new
+Supplier<ArrayList<String>>  listMaker  = ArrayList::new;
+// same as: () -> new ArrayList<>()
+
+Function<Integer, ArrayList<String>> sized = ArrayList::new;
+// same as: n -> new ArrayList<>(n)
+
+BiFunction<String, Integer, StringBuilder> sbMaker = StringBuilder::new;
+// matches StringBuilder(String str, int capacity) -- compiler finds matching constructor
+
+
+// REAL USAGE:
+List<String> names = Arrays.asList("charlie","alice","bob");
+names.sort(String::compareTo);                      // TYPE 3
+names.forEach(System.out::println);                 // TYPE 2
+names.stream().map(String::toUpperCase)             // TYPE 3
+              .collect(Collectors.toList());
+
+List<Integer> nums = Arrays.asList("1","2","3")
+    .stream()
+    .map(Integer::parseInt)                         // TYPE 1
+    .collect(Collectors.toList());
+
+// Constructor reference for stream collection:
+Stream<String> stream = Stream.of("a","b","c");
+List<String> list = stream.collect(Collectors.toCollection(ArrayList::new)); // TYPE 4
+
+
+// INTERVIEW TRICK:
+// Q: "What is the difference between TYPE 2 and TYPE 3 method reference?"
+// A: TYPE 2 (instance::method): the specific instance is CAPTURED at reference creation.
+//                                Always calls method on THAT specific object.
+//    TYPE 3 (Class::method):     the instance is provided as the FIRST ARGUMENT at call time.
+//                                Different instance can be used each invocation.
+//    Example:
+//    "hello"::contains  --> TYPE 2, always checks in "hello"
+//    String::contains   --> TYPE 3, checks in whatever String is passed as first arg
+```
+
+---
+
+## 8. CompletableFuture
+
+```java
+// Covered in multithreading session -- key Java 8 additions:
+
+// Create:
+CompletableFuture<String> cf = CompletableFuture.supplyAsync(() -> fetchData());
+CompletableFuture<Void>   cf2 = CompletableFuture.runAsync(() -> doWork());
+
+// Chain:
+cf.thenApply(s -> s.toUpperCase())         // transform result
+  .thenAccept(System.out::println)          // consume result
+  .thenRun(() -> System.out.println("done")); // run after, no input
+
+// Combine two futures:
+CompletableFuture<Integer> price   = CompletableFuture.supplyAsync(() -> 100);
+CompletableFuture<Integer> tax     = CompletableFuture.supplyAsync(() -> 18);
+CompletableFuture<Integer> total   = price.thenCombine(tax, Integer::sum);
+
+// Wait for all:
+CompletableFuture.allOf(cf1, cf2, cf3).join();
+
+// First to complete:
+CompletableFuture.anyOf(cf1, cf2, cf3).thenAccept(result -> use(result));
+
+// Exception handling:
+cf.exceptionally(ex -> "fallback value")
+  .handle((result, ex) -> ex != null ? "error" : result);
+
+// With custom executor:
+Executor pool = Executors.newFixedThreadPool(10);
+CompletableFuture.supplyAsync(() -> fetch(), pool);
+```
+
+---
+
+## 9. Collectors — All Methods
+
+```java
+// Collectors.toList()
+// Collectors.toSet()
+// Collectors.toUnmodifiableList()  (Java 10)
+// Collectors.toCollection(ArrayList::new)
+
+// Collectors.joining()
+String joined1 = stream.collect(Collectors.joining());           // "abcde"
+String joined2 = stream.collect(Collectors.joining(", "));       // "a, b, c"
+String joined3 = stream.collect(Collectors.joining(", ","[","]")); // "[a, b, c]"
+
+// Collectors.counting()
+long count = stream.collect(Collectors.counting());
+
+// Collectors.summingInt/Long/Double()
+int total = orders.stream().collect(Collectors.summingInt(Order::getQuantity));
+
+// Collectors.averagingInt/Long/Double()
+double avg = orders.stream().collect(Collectors.averagingDouble(Order::getAmount));
+
+// Collectors.summarizingInt/Long/Double()
+IntSummaryStatistics stats = orders.stream()
+    .collect(Collectors.summarizingInt(Order::getQuantity));
+
+// Collectors.groupingBy()
+Map<String, List<Order>> byStatus =
+    orders.stream().collect(Collectors.groupingBy(Order::getStatus));
+
+// groupingBy with downstream collector:
+Map<String, Long> countByStatus =
+    orders.stream().collect(
+        Collectors.groupingBy(Order::getStatus, Collectors.counting()));
+
+Map<String, Double> avgAmtByStatus =
+    orders.stream().collect(
+        Collectors.groupingBy(Order::getStatus,
+            Collectors.averagingDouble(Order::getAmount)));
+
+// Collectors.partitioningBy() -- splits into true/false groups
+Map<Boolean, List<Integer>> evenOdd =
+    IntStream.rangeClosed(1,10).boxed()
+        .collect(Collectors.partitioningBy(n -> n % 2 == 0));
+
+// Collectors.toMap()
+Map<String, Double> orderAmounts =
+    orders.stream().collect(
+        Collectors.toMap(Order::getId, Order::getAmount));
+
+// toMap with merge function (handle duplicate keys):
+Map<String, Double> merged =
+    orders.stream().collect(
+        Collectors.toMap(
+            Order::getStatus,
+            Order::getAmount,
+            Double::sum));          // merge duplicate key values by summing
+
+// Collectors.mapping()
+Map<String, List<String>> idsByStatus =
+    orders.stream().collect(
+        Collectors.groupingBy(Order::getStatus,
+            Collectors.mapping(Order::getId, Collectors.toList())));
+
+// Collectors.collectingAndThen() -- apply finishing function
+List<String> unmodifiable =
+    stream.collect(
+        Collectors.collectingAndThen(
+            Collectors.toList(),
+            Collections::unmodifiableList));
+
+// Collectors.teeing() (Java 12 -- mentioned for completeness)
+// Collectors.filtering() (Java 9)
+```
+
+---
+
+## 10. Interface Static Methods, Base64, StringJoiner
+
+```java
+// ── BASE64 ────────────────────────────────────────────────────────────
+// Before Java 8: had to use Apache Commons or internal sun.misc.BASE64Encoder
+
+String original = "Hello Manoj";
+
+// Encode:
+String encoded = Base64.getEncoder().encodeToString(original.getBytes());
+// "SGVsbG8gTWFub2o="
+
+// Decode:
+byte[] decoded = Base64.getDecoder().decode(encoded);
+String back = new String(decoded);  // "Hello Manoj"
+
+// URL-safe encoder (replaces + with - and / with _):
+String urlSafe = Base64.getUrlEncoder().encodeToString(original.getBytes());
+
+// MIME encoder (line-length limit 76, CRLF line separators):
+String mime = Base64.getMimeEncoder().encodeToString(original.getBytes());
+
+// Without padding:
+String noPad = Base64.getEncoder().withoutPadding().encodeToString(original.getBytes());
+
+
+// ── STRINGJOINER ──────────────────────────────────────────────────────
+// Alternative to StringBuilder for joining with delimiter
+
+StringJoiner sj = new StringJoiner(", ");
+sj.add("Apple").add("Banana").add("Cherry");
+sj.toString();  // "Apple, Banana, Cherry"
+
+// With prefix and suffix:
+StringJoiner sj2 = new StringJoiner(", ", "[", "]");
+sj2.add("a").add("b").add("c");
+sj2.toString();  // "[a, b, c]"
+
+// Empty value (returned when no elements added):
+StringJoiner sj3 = new StringJoiner(", ", "[", "]");
+sj3.setEmptyValue("EMPTY");
+sj3.toString();  // "EMPTY"
+
+// Merge two StringJoiners:
+StringJoiner sj4 = new StringJoiner(", ");
+sj4.add("x").add("y");
+sj.merge(sj4);  // appends sj4's content to sj
+
+
+// ── ARRAYS.PARALLELSORT() ─────────────────────────────────────────────
+int[] arr = {5, 3, 1, 4, 2};
+Arrays.parallelSort(arr);   // uses ForkJoinPool, faster for large arrays
+// Same as Arrays.sort() but parallel for arrays > 8192 elements (threshold)
+// Uses parallel merge sort internally
+
+// With range:
+Arrays.parallelSort(arr, 1, 4);  // sort indices 1 to 3 only
+
+// With comparator (object arrays):
+String[] names = {"Charlie", "Alice", "Bob"};
+Arrays.parallelSort(names, String::compareTo);
+
+
+// ── COLLECTIONS NEW METHODS ───────────────────────────────────────────
+List<String> list = new ArrayList<>(Arrays.asList("a","b","c","d"));
+
+// forEach:
+list.forEach(System.out::println);
+
+// removeIf:
+list.removeIf(s -> s.equals("b"));       // removes all "b" elements
+
+// replaceAll:
+list.replaceAll(String::toUpperCase);     // [A, C, D]
+
+// sort (instance method on List):
+list.sort(Comparator.reverseOrder());
+
+
+// ── MAP NEW METHODS ───────────────────────────────────────────────────
+Map<String, Integer> map = new HashMap<>();
+map.put("a", 1); map.put("b", 2);
+
+// forEach:
+map.forEach((k, v) -> System.out.println(k + "=" + v));
+
+// getOrDefault:
+map.getOrDefault("z", 0);           // 0 (z not in map)
+
+// putIfAbsent:
+map.putIfAbsent("a", 99);           // no change (a exists)
+map.putIfAbsent("c", 3);            // adds c=3
+
+// computeIfAbsent -- compute and insert if key absent:
+map.computeIfAbsent("d", k -> k.length());   // adds d=1
+
+// computeIfPresent -- compute and update if key present:
+map.computeIfPresent("a", (k, v) -> v * 10); // a becomes 10
+
+// compute -- always compute new value:
+map.compute("a", (k, v) -> v == null ? 1 : v + 1);
+
+// merge -- if absent put value; if present apply function:
+map.merge("a", 1, Integer::sum);    // a = old_value + 1
+map.merge("z", 1, Integer::sum);    // z = 1 (was absent)
+
+// replaceAll:
+map.replaceAll((k, v) -> v * 2);    // doubles all values
+
+// remove with value check:
+map.remove("a", 1);    // removes only if a maps to exactly 1
+
+// replace:
+map.replace("b", 20);              // replaces b's value
+map.replace("b", 2, 20);           // replaces only if current value is 2
+```
+
+---
+
+## 11. Comparator Enhancements
+
+```java
+// All new in Java 8:
+
+// comparing() -- create Comparator from key extractor
+Comparator<Order> byAmount = Comparator.comparing(Order::getAmount);
+
+// reversed()
+Comparator<Order> byAmountDesc = Comparator.comparing(Order::getAmount).reversed();
+
+// thenComparing() -- secondary sort
+Comparator<Order> byAmountThenId =
+    Comparator.comparing(Order::getAmount)
+              .thenComparing(Order::getId);
+
+// thenComparingInt/Long/Double (avoids boxing):
+Comparator<String> byLengthThenAlpha =
+    Comparator.comparingInt(String::length)
+              .thenComparing(Comparator.naturalOrder());
+
+// naturalOrder / reverseOrder:
+Comparator<String> natural  = Comparator.naturalOrder();
+Comparator<String> reversed = Comparator.reverseOrder();
+
+// nullsFirst / nullsLast:
+Comparator<String> nullsFirst = Comparator.nullsFirst(Comparator.naturalOrder());
+Comparator<String> nullsLast  = Comparator.nullsLast(Comparator.naturalOrder());
+
+List<String> withNulls = Arrays.asList("b", null, "a", null, "c");
+withNulls.sort(nullsFirst);   // [null, null, a, b, c]
+withNulls.sort(nullsLast);    // [a, b, c, null, null]
+
+// comparingInt / comparingLong / comparingDouble (primitive, avoids boxing):
+Comparator<String> byLength = Comparator.comparingInt(String::length);
+```
+
+---
+
+## 12. Repeating Annotations and Type Annotations
+
+```java
+// ── REPEATING ANNOTATIONS (@Repeatable) ──────────────────────────────
+// Before Java 8: couldn't apply same annotation twice to same element
+
+// Step 1: Define container annotation
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface Schedules {
+    Schedule[] value();
+}
+
+// Step 2: Mark annotation as repeatable
+@Repeatable(Schedules.class)
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface Schedule {
+    String cron();
+}
+
+// Step 3: Use it multiple times on same element:
+@Schedule(cron = "0 0 9 * * *")
+@Schedule(cron = "0 0 17 * * *")
+public void runTwiceDaily() { }
+
+// Reading at runtime:
+Schedule[] schedules = method.getAnnotationsByType(Schedule.class);
+
+
+// ── TYPE ANNOTATIONS ─────────────────────────────────────────────────
+// Before Java 8: annotations only on declarations
+// Java 8: annotations on TYPE USE positions
+
+// On generic type arguments:
+List<@NotNull String> names;
+Map<@NotNull String, @Positive Integer> scores;
+
+// On casts:
+String s = (@NonNull String) obj;
+
+// On throws:
+void method() throws @Critical IOException { }
+
+// On new:
+Object o = new @Initialized MyClass();
+
+// On implements:
+class MyList implements @Readonly List<String> { }
+
+// PURPOSE: enables tools like Checker Framework, NullAway
+// to do static analysis and catch bugs at compile time.
+```
+
+---
+
+## 13. PermGen Removed → Metaspace
+
+```
+  BEFORE Java 8:
+  ==============
+  JVM memory:
+  +──────────────+──────────────+──────────────+
+  |     Heap     |   PermGen    |  Native Mem  |
+  +──────────────+──────────────+──────────────+
+  PermGen (Permanent Generation):
+  - Stored: class metadata, interned strings, static variables
+  - Fixed size: -XX:MaxPermSize=256m (had to be tuned manually)
+  - Common error: java.lang.OutOfMemoryError: PermGen space
+  - Cause: loading too many classes (heavy frameworks, hot deploy in Tomcat)
+
+  AFTER Java 8:
+  =============
+  JVM memory:
+  +──────────────+──────────────────────────────+
+  |     Heap     |    Native Memory (Metaspace)  |
+  +──────────────+──────────────────────────────+
+  Metaspace:
+  - Stores: class metadata (NOT interned strings -- moved to heap)
+  - Lives in NATIVE memory (not JVM heap)
+  - Auto-grows by default (no fixed cap)
+  - -XX:MaxMetaspaceSize=256m to set a cap (optional but recommended)
+  - Avoids PermGen OOM -- but now native memory OOM possible if uncapped
+
+  WHAT MOVED WHERE:
+  =================
+  Class metadata       --> Metaspace (native)
+  Interned Strings     --> Java Heap (String pool in heap)
+  Static variables     --> Java Heap (referenced from class objects)
+
+  INTERVIEW TRICK:
+  Q: "What is PermGen and why was it removed?"
+  A: PermGen was a fixed-size JVM region storing class metadata.
+     Fixed size caused frequent OOM in applications loading many classes.
+     Replaced by Metaspace which uses native memory and auto-grows,
+     eliminating most PermGen OOM errors.
+     However, you should set -XX:MaxMetaspaceSize to prevent unbounded growth.
+```
+
+---
+
+## 14. HashMap Internal Changes (Java 8)
+
+```
+  JAVA 7:
+  =======
+  Each bucket: always a linked list
+  Worst case get(): O(n) if all keys hash to same bucket
+
+  JAVA 8:
+  =======
+  Each bucket: linked list OR Red-Black Tree
+
+  TREEIFY_THRESHOLD   = 8  -- convert list to tree when bucket has > 8 entries
+  UNTREEIFY_THRESHOLD = 6  -- convert back to list when < 6 entries
+  MIN_TREEIFY_CAPACITY = 64 -- only treeify if total map size >= 64
+                              (below 64, resize instead of treeify)
+
+  Worst case get() after treeification: O(log n)
+
+  WHY IT MATTERS:
+  ===============
+  Hash collision DoS attack: attacker crafts keys with same hashCode
+  to force all entries into one bucket.
+  Java 7: O(n) = server grinds to halt
+  Java 8: O(log n) = still manageable
+
+  Also: String hashCode randomization (HASH_SEED) added in Java 7u6
+  makes collision attacks much harder.
+```
+
+---
+
+## 15. Concurrency Additions
+
+```java
+// ── LongAdder / LongAccumulator ───────────────────────────────────────
+// Better than AtomicLong under high contention
+
+// AtomicLong: all threads compete on ONE cell (CAS spinning under contention)
+AtomicLong atomicCount = new AtomicLong();
+atomicCount.incrementAndGet();
+
+// LongAdder: each thread has own cell, sum() combines them
+// Less contention, higher throughput for increment-heavy scenarios
+LongAdder adder = new LongAdder();
+adder.increment();
+adder.add(5);
+long total = adder.sum();           // combine all cells
+adder.reset();                      // reset all cells to 0
+long sumThenReset = adder.sumThenReset();
+
+// LongAccumulator: generalized LongAdder with custom function
+LongAccumulator max = new LongAccumulator(Long::max, Long.MIN_VALUE);
+max.accumulate(5);
+max.accumulate(10);
+max.accumulate(3);
+max.get();    // 10
+
+// DoubleAdder / DoubleAccumulator: same concepts for double
+
+
+// ── StampedLock (Java 8) ──────────────────────────────────────────────
+// More flexible than ReadWriteLock
+// Optimistic read mode: no actual lock, just check if write happened
+
+StampedLock lock = new StampedLock();
+
+// Optimistic read -- fastest, lock-free
+long stamp = lock.tryOptimisticRead();
+int value = sharedValue;           // read
+if (!lock.validate(stamp)) {       // check if write happened during read
+    stamp = lock.readLock();       // fall back to real read lock
+    try {
+        value = sharedValue;
+    } finally {
+        lock.unlockRead(stamp);
+    }
+}
+
+// Write lock:
+long writeStamp = lock.writeLock();
+try {
+    sharedValue = newValue;
+} finally {
+    lock.unlockWrite(writeStamp);
+}
+
+// Convert read lock to write lock (upgrade):
+long readStamp = lock.readLock();
+long writeStamp2 = lock.tryConvertToWriteLock(readStamp);
+if (writeStamp2 != 0) {
+    // converted successfully
+    lock.unlockWrite(writeStamp2);
+} else {
+    lock.unlockRead(readStamp);
+    // retry with write lock
+}
+
+// COMPARISON:
+// synchronized      --> simple, one thread at a time
+// ReentrantLock     --> tryLock, timeout, fair mode
+// ReadWriteLock     --> concurrent reads, exclusive writes
+// StampedLock       --> all of above + optimistic reads (fastest reads)
+
+
+// ── ConcurrentHashMap new methods ─────────────────────────────────────
+// (covered in Collections section -- compute, merge, forEach parallel etc.)
+
+// forEach with parallelism threshold:
+map.forEach(2, (k, v) -> process(k, v));      // parallel if size >= 2
+
+// search -- returns first non-null result:
+String found = map.search(2, (k, v) -> v > 10 ? k : null);
+
+// reduce:
+int sum = map.reduce(2, (k, v) -> v, Integer::sum);
+
+// reduceValues / reduceKeys / reduceEntries:
+int sumVals = map.reduceValues(2, v -> v, Integer::sum);
+```
+
+---
+
+## Quick-Fire Interview Questions — Java 8
+
+```
+  Q: "What is the difference between map() and flatMap() in Stream?"
+  A: map()     --> one input, one output (1:1 transformation)
+     flatMap() --> one input, zero or more outputs (1:N, then flatten)
+     map(s -> s.split(" "))     --> Stream<String[]>  (stream of arrays)
+     flatMap(s -> Arrays.stream(s.split(" "))) --> Stream<String> (flattened)
+
+  Q: "What is a terminal operation? Give examples."
+  A: Operation that triggers pipeline execution and returns non-Stream result.
+     collect(), count(), forEach(), reduce(), min(), max(),
+     findFirst(), findAny(), anyMatch(), allMatch(), noneMatch(), toArray()
+
+  Q: "Can you have multiple terminal operations on same stream?"
+  A: NO. Stream is consumed after first terminal op.
+     Second terminal op throws IllegalStateException.
+
+  Q: "What is the difference between findFirst() and findAny()?"
+  A: findFirst() -- returns first element in encounter order (deterministic)
+     findAny()   -- returns ANY element (may be faster in parallel streams)
+     In sequential streams, both usually return first element.
+     In parallel streams, findAny() can return any element from any chunk.
+
+  Q: "Intermediate operation that is stateful vs stateless?"
+  A: Stateless: filter(), map(), peek(), flatMap() -- process each element independently
+     Stateful:  sorted(), distinct(), limit(), skip() -- need to see other elements
+     Stateful ops are more expensive in parallel streams.
+
+  Q: "What is effectively final? Why does lambda require it?"
+  A: Variable never reassigned after init (no explicit 'final' needed).
+     Lambda captures the VALUE of the variable at capture time.
+     If variable could change after capture, the lambda would have stale data.
+     Java enforces effectively-final to prevent this confusion.
+
+  Q: "Default method vs abstract class -- when to use which?"
+  A: Default method: add behavior to interface without breaking implementors.
+                     No state (no instance fields in interfaces).
+                     Multiple inheritance of behavior allowed.
+     Abstract class: need to maintain state (fields).
+                     Constructors needed.
+                     Single inheritance only.
+     Use interface + default methods when: shared behavior, no state needed.
+     Use abstract class when: shared state + behavior needed.
+
+  Q: "What is Optional.orElse() vs orElseGet()?"
+  A: orElse(value)     -- ALWAYS evaluates the value, even if Optional is present.
+     orElseGet(supplier) -- evaluates Supplier ONLY if Optional is empty (lazy).
+     orElse(expensiveCall())       -- expensiveCall() ALWAYS runs
+     orElseGet(() -> expensiveCall()) -- expensiveCall() runs only if empty
+     Always prefer orElseGet() for expensive default computations.
+
+  Q: "What is the difference between Predicate.and() and &&?"
+  A: && is a Java operator (short-circuit, primitive)
+     Predicate.and() composes two Predicates into a new Predicate
+     p1.and(p2) = x -> p1.test(x) && p2.test(x)
+     Useful for building predicates dynamically at runtime.
+
+  Q: "Nashorn JavaScript Engine -- what is it?"
+  A: Java 8 replaced Rhino with Nashorn as the built-in JS engine.
+     Allows executing JavaScript from Java code.
+     ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn");
+     engine.eval("print('Hello from JS')");
+     Deprecated in Java 11, removed in Java 15 (replaced by GraalVM).
+```
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's everything in chat — all validation approaches, implementation, and tricky interview Q&A.
+
+---
+
+## Validation Approaches — Overview
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                        VALIDATION IN REST - ALL APPROACHES                        |
+  +-----------------------------------------------------------------------------------+
+
+  REQUEST COMES IN
+       |
+       v
+  +--------------------+
+  | 1. Bean Validation |  <-- @NotNull, @Size, @Email on DTO fields
+  |    (JSR-380)       |      Fires before method body executes
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 2. Custom          |  <-- @interface + ConstraintValidator<A,T>
+  |    Annotation      |      Your own business rule as annotation
+  |    Validator       |
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 3. @Validated +    |  <-- Validate method params, path vars,
+  |    Method-level    |      query params directly on controller
+  |    Validation      |
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 4. Manual /        |  <-- if-else in service layer
+  |    Programmatic    |      Complex cross-field rules
+  |    Validation      |
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 5. Cross-Field     |  <-- @interface at CLASS level
+  |    Validation      |      Validate field A relative to field B
+  |    (class-level)   |      e.g. startDate before endDate
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 6. Global          |  <-- @RestControllerAdvice
+  |    Exception       |      Catches MethodArgumentNotValidException
+  |    Handler         |      Returns structured error response
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 7. Group           |  <-- Validate different rules for
+  |    Validation      |      CREATE vs UPDATE (different constraints)
+  +--------------------+
+       |
+       v
+  +--------------------+
+  | 8. Nested Object   |  <-- @Valid on nested DTO field
+  |    Validation      |      Validates Address inside OrderRequest
+  +--------------------+
+
+  LAYERS WHERE VALIDATION HAPPENS:
+  ==================================
+
+  [Request] -> [Controller] -> [Service] -> [Repository] -> [Database]
+                    |               |                             |
+               Bean Validation   Business               DB constraints
+               @Valid on body     logic checks          (nullable, unique)
+               @Validated on      (manual)              last safety net
+               path/query vars    Cross-field
+                                  Custom rules
+```
+
+---
+
+## pom.xml
+
+```xml
+<!-- Bean Validation (JSR-380) — included in Spring Boot Web starter -->
+<!-- but explicit for clarity -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-validation</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+```
+
+---
+
+## 1. Bean Validation — All Annotations
+
+```java
+// OrderRequest.java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderRequest {
+
+    // ── String validations ──────────────────────────────────────────
+    @NotNull(message = "Product ID is required")
+    // fails if null. Does NOT fail on empty string "".
+
+    @NotEmpty(message = "Product ID cannot be empty")
+    // fails if null OR empty string "". Does NOT fail on "   " (spaces).
+
+    @NotBlank(message = "Product ID cannot be blank")
+    // fails if null OR empty OR only whitespace. STRICTEST of the three.
+    private String productId;
+
+    @Size(min = 3, max = 50, message = "Product name must be 3-50 characters")
+    private String productName;
+
+    // ── Numeric validations ─────────────────────────────────────────
+    @NotNull(message = "Quantity is required")
+    @Min(value = 1, message = "Quantity must be at least 1")
+    @Max(value = 1000, message = "Quantity cannot exceed 1000")
+    private Integer quantity;
+
+    @NotNull(message = "Amount is required")
+    @DecimalMin(value = "0.1", inclusive = true, message = "Amount must be > 0")
+    @DecimalMax(value = "99999.99", message = "Amount cannot exceed 99999.99")
+    @Digits(integer = 5, fraction = 2, message = "Amount format: up to 5 digits, 2 decimal places")
+    private BigDecimal amount;
+
+    @Positive(message = "Price must be positive")           // > 0
+    @PositiveOrZero(message = "Discount must be >= 0")      // >= 0
+    @Negative(message = "Adjustment must be negative")      // < 0
+    @NegativeOrZero(message = "Loss must be <= 0")          // <= 0
+    private BigDecimal discount;
+
+    // ── Date validations ────────────────────────────────────────────
+    @Future(message = "Delivery date must be in the future")
+    private LocalDateTime deliveryDate;
+
+    @FutureOrPresent(message = "Schedule date must be now or later")
+    private LocalDateTime scheduledAt;
+
+    @Past(message = "Birth date must be in the past")
+    private LocalDate birthDate;
+
+    @PastOrPresent(message = "Order date cannot be in the future")
+    private LocalDateTime orderDate;
+
+    // ── Pattern / format validations ────────────────────────────────
+    @Email(message = "Invalid email format")
+    private String customerEmail;
+
+    @Pattern(
+        regexp  = "^[A-Z]{2}[0-9]{6}$",
+        message = "Order code must be 2 uppercase letters followed by 6 digits"
+    )
+    private String orderCode;
+
+    // ── Boolean ─────────────────────────────────────────────────────
+    @AssertTrue(message = "Terms must be accepted")
+    private Boolean termsAccepted;
+
+    @AssertFalse(message = "Account must not be locked")
+    private Boolean accountLocked;
+
+    // ── Collection validations ──────────────────────────────────────
+    @NotEmpty(message = "At least one item is required")
+    @Size(max = 20, message = "Cannot order more than 20 items at once")
+    private List<@NotNull @Valid OrderItemRequest> items;
+
+    // ── Nested object -- @Valid triggers validation on AddressRequest ─
+    @NotNull(message = "Shipping address is required")
+    @Valid
+    private AddressRequest shippingAddress;
+}
+```
+
+---
+
+## 2. Nested DTO Validation
+
+```java
+// AddressRequest.java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class AddressRequest {
+
+    @NotBlank(message = "Street is required")
+    private String street;
+
+    @NotBlank(message = "City is required")
+    @Size(max = 100)
+    private String city;
+
+    @NotBlank(message = "Pincode is required")
+    @Pattern(regexp = "^[1-9][0-9]{5}$", message = "Invalid Indian pincode")
+    private String pincode;
+
+    @NotBlank(message = "Country is required")
+    private String country;
+}
+
+// OrderItemRequest.java
+@Data
+public class OrderItemRequest {
+
+    @NotBlank(message = "Item product ID is required")
+    private String productId;
+
+    @Min(value = 1, message = "Item quantity must be at least 1")
+    private Integer quantity;
+}
+```
+
+---
+
+## 3. Controller — @Valid and @Validated
+
+```java
+@RestController
+@RequestMapping("/orders")
+@Validated   // enables method-level validation (path vars, query params)
+public class OrderController {
+
+
+    // ── @Valid on request body ────────────────────────────────────────
+    // Triggers Bean Validation on OrderRequest fields
+    // If validation fails --> MethodArgumentNotValidException thrown
+    // Your @RestControllerAdvice catches it
+    @PostMapping
+    public ResponseEntity<OrderResponse> create(
+            @Valid @RequestBody OrderRequest request) {
+        // if we reach here, all @NotNull, @Size etc. passed
+        return ResponseEntity.status(201).body(orderService.create(request));
+    }
+
+
+    // ── @Validated on path variable ───────────────────────────────────
+    // @Valid does NOT work on path vars -- must use @Validated on class
+    // and constraint annotation directly on the parameter
+    @GetMapping("/{id}")
+    public ResponseEntity<OrderResponse> get(
+            @PathVariable
+            @NotBlank(message = "Order ID cannot be blank")
+            @Pattern(regexp = "^ORD-[0-9]+$", message = "Invalid order ID format")
+            String id) {
+        return ResponseEntity.ok(orderService.get(id));
+    }
+
+
+    // ── @Validated on query params ────────────────────────────────────
+    @GetMapping
+    public ResponseEntity<List<OrderResponse>> list(
+            @RequestParam
+            @Min(value = 0, message = "Page must be >= 0")
+            Integer page,
+
+            @RequestParam
+            @Min(value = 1) @Max(value = 100)
+            Integer size,
+
+            @RequestParam(required = false)
+            @Pattern(regexp = "PLACED|CONFIRMED|SHIPPED|DELIVERED|CANCELLED",
+                     message = "Invalid status value")
+            String status) {
+        return ResponseEntity.ok(orderService.list(page, size, status));
+    }
+
+
+    // ── @Valid on request param object (Spring 6+ with @ParameterObject) ─
+    @GetMapping("/search")
+    public ResponseEntity<List<OrderResponse>> search(
+            @Valid OrderSearchRequest searchRequest) {
+        return ResponseEntity.ok(orderService.search(searchRequest));
+    }
+}
+```
+
+---
+
+## 4. Custom Constraint Annotation
+
+```java
+// ── Step 1: Define the annotation ────────────────────────────────────
+
+@Documented
+@Constraint(validatedBy = ValidOrderStatusValidator.class)  // links to validator
+@Target({ ElementType.FIELD, ElementType.PARAMETER })
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ValidOrderStatus {
+
+    String message() default "Invalid order status. Allowed: PLACED, CONFIRMED, SHIPPED, DELIVERED, CANCELLED";
+
+    Class<?>[] groups() default {};      // required by Bean Validation spec
+
+    Class<? extends Payload>[] payload() default {};  // required by spec
+
+    // custom attribute
+    String[] allowedValues() default {"PLACED", "CONFIRMED", "SHIPPED", "DELIVERED", "CANCELLED"};
+}
+
+
+// ── Step 2: Implement the validator ──────────────────────────────────
+
+// ConstraintValidator<AnnotationType, FieldType>
+public class ValidOrderStatusValidator
+        implements ConstraintValidator<ValidOrderStatus, String> {
+
+    private Set<String> allowedValues;
+
+    @Override
+    public void initialize(ValidOrderStatus annotation) {
+        // read the allowedValues from the annotation
+        allowedValues = Set.of(annotation.allowedValues());
+    }
+
+    @Override
+    public boolean isValid(String value, ConstraintValidatorContext context) {
+        // null is handled by @NotNull -- return true here so they don't conflict
+        if (value == null) return true;
+
+        boolean valid = allowedValues.contains(value.toUpperCase());
+
+        if (!valid) {
+            // customize the error message dynamically
+            context.disableDefaultConstraintViolation();
+            context.buildConstraintViolationWithTemplate(
+                "Status '" + value + "' is not allowed. Valid values: " + allowedValues
+            ).addConstraintViolation();
+        }
+
+        return valid;
+    }
+}
+
+
+// ── Step 3: Use it ───────────────────────────────────────────────────
+
+public class OrderUpdateRequest {
+
+    @NotNull
+    @ValidOrderStatus(allowedValues = {"CONFIRMED", "SHIPPED", "CANCELLED"})
+    private String status;
+
+    private String notes;
+}
+```
+
+---
+
+## 5. Cross-Field Validation (Class-Level Constraint)
+
+```java
+// ── Step 1: Define class-level annotation ────────────────────────────
+
+@Documented
+@Constraint(validatedBy = DateRangeValidator.class)
+@Target({ ElementType.TYPE })          // TYPE = class level, not field level
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ValidDateRange {
+    String message() default "Start date must be before end date";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+
+    String startField();    // name of the start date field
+    String endField();      // name of the end date field
+}
+
+
+// ── Step 2: Implement validator ──────────────────────────────────────
+
+public class DateRangeValidator implements ConstraintValidator<ValidDateRange, Object> {
+
+    private String startField;
+    private String endField;
+
+    @Override
+    public void initialize(ValidDateRange annotation) {
+        startField = annotation.startField();
+        endField   = annotation.endField();
+    }
+
+    @Override
+    public boolean isValid(Object obj, ConstraintValidatorContext context) {
+        try {
+            // use reflection to read field values from the DTO
+            Field start = obj.getClass().getDeclaredField(startField);
+            Field end   = obj.getClass().getDeclaredField(endField);
+            start.setAccessible(true);
+            end.setAccessible(true);
+
+            LocalDateTime startVal = (LocalDateTime) start.get(obj);
+            LocalDateTime endVal   = (LocalDateTime) end.get(obj);
+
+            if (startVal == null || endVal == null) return true; // @NotNull handles nulls
+
+            boolean valid = startVal.isBefore(endVal);
+
+            if (!valid) {
+                // attach error to specific field instead of whole object
+                context.disableDefaultConstraintViolation();
+                context.buildConstraintViolationWithTemplate(
+                    startField + " must be before " + endField
+                ).addPropertyNode(startField).addConstraintViolation();
+            }
+
+            return valid;
+
+        } catch (Exception e) {
+            return false;
+        }
+    }
+}
+
+
+// ── Step 3: Apply on DTO ─────────────────────────────────────────────
+
+@Data
+@ValidDateRange(startField = "startDate", endField = "endDate")
+// can stack multiple cross-field validations:
+// @ValidDateRange(startField = "shipDate", endField = "deliveryDate")
+public class OrderScheduleRequest {
+
+    @NotNull
+    @Future
+    private LocalDateTime startDate;
+
+    @NotNull
+    @Future
+    private LocalDateTime endDate;
+
+    @NotBlank
+    private String orderId;
+}
+```
+
+---
+
+## 6. Group Validation — Different Rules for Create vs Update
+
+```java
+// ── Step 1: Define marker interfaces (groups) ────────────────────────
+
+public interface OnCreate {}   // marker for create operations
+public interface OnUpdate {}   // marker for update operations
+
+
+// ── Step 2: Assign constraints to groups ─────────────────────────────
+
+@Data
+public class CustomerRequest {
+
+    // ID: NOT allowed on create (server generates it)
+    //     REQUIRED on update (must know which to update)
+    @Null(groups = OnCreate.class, message = "ID must be null on create")
+    @NotNull(groups = OnUpdate.class, message = "ID is required on update")
+    private Long id;
+
+    // Name required on create, optional on update
+    @NotBlank(groups = OnCreate.class, message = "Name required on create")
+    @Size(min = 2, max = 100, groups = {OnCreate.class, OnUpdate.class})
+    private String name;
+
+    // Email required on create only
+    @NotBlank(groups = OnCreate.class)
+    @Email(groups = {OnCreate.class, OnUpdate.class})
+    private String email;
+
+    // Password: required on create, ignored on update
+    @NotBlank(groups = OnCreate.class)
+    @Size(min = 8, groups = OnCreate.class, message = "Password min 8 chars")
+    private String password;
+}
+
+
+// ── Step 3: Use @Validated(Group.class) in controller ────────────────
+
+@RestController
+@RequestMapping("/customers")
+public class CustomerController {
+
+    // @Validated(OnCreate.class) -- only OnCreate group constraints fire
+    @PostMapping
+    public ResponseEntity<CustomerResponse> create(
+            @Validated(OnCreate.class) @RequestBody CustomerRequest request) {
+        return ResponseEntity.status(201).body(customerService.create(request));
+    }
+
+    // @Validated(OnUpdate.class) -- only OnUpdate group constraints fire
+    @PutMapping("/{id}")
+    public ResponseEntity<CustomerResponse> update(
+            @PathVariable Long id,
+            @Validated(OnUpdate.class) @RequestBody CustomerRequest request) {
+        return ResponseEntity.ok(customerService.update(id, request));
+    }
+}
+
+// NOTE: @Valid (without group) triggers only constraints with NO group specified
+//       @Validated(OnCreate.class) triggers only OnCreate group constraints
+//       They do NOT overlap unless you use Default.class group explicitly
+```
+
+---
+
+## 7. Programmatic / Manual Validation in Service
+
+```java
+@Service
+public class OrderService {
+
+    @Autowired private OrderRepository orderRepository;
+    @Autowired private CustomerRepository customerRepository;
+    @Autowired private javax.validation.Validator validator;  // programmatic validator
+
+
+    public OrderResponse createOrder(OrderRequest request) {
+
+        // ── 1. Programmatic Bean Validation ──────────────────────────
+        // Useful when you receive an object NOT through a controller
+        // (e.g. from Kafka message, scheduled job, internal call)
+        Set<ConstraintViolation<OrderRequest>> violations = validator.validate(request);
+        if (!violations.isEmpty()) {
+            String errors = violations.stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .collect(Collectors.joining(", "));
+            throw new ValidationException("Validation failed: " + errors);
+        }
+
+
+        // ── 2. Business rule validation (cross-service checks) ────────
+        // Bean Validation cannot do this -- needs DB/service calls
+
+        // Rule: customer must exist
+        Customer customer = customerRepository.findById(request.getCustomerId())
+            .orElseThrow(() -> new ResourceNotFoundException(
+                "Customer not found: " + request.getCustomerId()));
+
+        // Rule: customer must be active
+        if (!customer.isActive()) {
+            throw new BusinessValidationException("Customer account is suspended");
+        }
+
+        // Rule: duplicate order check (idempotency)
+        if (request.getIdempotencyKey() != null) {
+            orderRepository.findByIdempotencyKey(request.getIdempotencyKey())
+                .ifPresent(existing -> {
+                    throw new DuplicateOrderException(
+                        "Order already exists for this idempotency key", existing);
+                });
+        }
+
+        // Rule: credit limit check
+        BigDecimal pendingAmount = orderRepository.sumPendingAmountByCustomer(
+            request.getCustomerId());
+        if (pendingAmount.add(request.getAmount()).compareTo(customer.getCreditLimit()) > 0) {
+            throw new BusinessValidationException(
+                "Order exceeds customer credit limit. Available: "
+                + customer.getCreditLimit().subtract(pendingAmount));
+        }
+
+        // Rule: stock check (cross-service call)
+        boolean inStock = inventoryClient.checkStock(
+            request.getProductId(), request.getQuantity());
+        if (!inStock) {
+            throw new BusinessValidationException(
+                "Insufficient stock for product: " + request.getProductId());
+        }
+
+        // All validations passed -- proceed with business logic
+        return save(request, customer);
+    }
+}
+```
+
+---
+
+## 8. Global Exception Handler — Structured Error Response
+
+```java
+// ── Error response DTO ────────────────────────────────────────────────
+
+@Data
+@Builder
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class ApiError {
+    private int         status;
+    private String      error;
+    private String      message;
+    private String      path;
+    private LocalDateTime timestamp;
+    private List<FieldError> fieldErrors;   // for validation errors
+
+    @Data
+    @AllArgsConstructor
+    public static class FieldError {
+        private String field;
+        private Object rejectedValue;
+        private String message;
+    }
+}
+
+
+// ── Global handler ────────────────────────────────────────────────────
+
+@RestControllerAdvice
+@Slf4j
+public class GlobalExceptionHandler {
+
+    // ── 1. @Valid / @Validated on @RequestBody failure ────────────────
+    // Thrown when Bean Validation fails on request body
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiError> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException ex,
+            HttpServletRequest request) {
+
+        List<ApiError.FieldError> fieldErrors = ex.getBindingResult()
+            .getFieldErrors()
+            .stream()
+            .map(fe -> new ApiError.FieldError(
+                fe.getField(),
+                fe.getRejectedValue(),
+                fe.getDefaultMessage()))
+            .collect(Collectors.toList());
+
+        ApiError error = ApiError.builder()
+            .status(400)
+            .error("Validation Failed")
+            .message("Request has " + fieldErrors.size() + " validation error(s)")
+            .path(request.getRequestURI())
+            .timestamp(LocalDateTime.now())
+            .fieldErrors(fieldErrors)
+            .build();
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+
+    // ── 2. @Validated on path var / query param failure ───────────────
+    // Thrown when constraint on method parameter fails
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ApiError> handleConstraintViolation(
+            ConstraintViolationException ex,
+            HttpServletRequest request) {
+
+        List<ApiError.FieldError> fieldErrors = ex.getConstraintViolations()
+            .stream()
+            .map(cv -> new ApiError.FieldError(
+                cv.getPropertyPath().toString(),
+                cv.getInvalidValue(),
+                cv.getMessage()))
+            .collect(Collectors.toList());
+
+        ApiError error = ApiError.builder()
+            .status(400)
+            .error("Constraint Violation")
+            .message("Invalid request parameters")
+            .path(request.getRequestURI())
+            .timestamp(LocalDateTime.now())
+            .fieldErrors(fieldErrors)
+            .build();
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+
+    // ── 3. Business validation failure ───────────────────────────────
+    @ExceptionHandler(BusinessValidationException.class)
+    public ResponseEntity<ApiError> handleBusinessValidation(
+            BusinessValidationException ex,
+            HttpServletRequest request) {
+
+        ApiError error = ApiError.builder()
+            .status(422)
+            .error("Business Rule Violation")
+            .message(ex.getMessage())
+            .path(request.getRequestURI())
+            .timestamp(LocalDateTime.now())
+            .build();
+
+        return ResponseEntity.unprocessableEntity().body(error);
+    }
+
+
+    // ── 4. Resource not found ─────────────────────────────────────────
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiError> handleNotFound(
+            ResourceNotFoundException ex,
+            HttpServletRequest request) {
+
+        ApiError error = ApiError.builder()
+            .status(404)
+            .error("Not Found")
+            .message(ex.getMessage())
+            .path(request.getRequestURI())
+            .timestamp(LocalDateTime.now())
+            .build();
+
+        return ResponseEntity.status(404).body(error);
+    }
+
+
+    // ── 5. Malformed JSON body ────────────────────────────────────────
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleMalformedJson(
+            HttpMessageNotReadableException ex,
+            HttpServletRequest request) {
+
+        ApiError error = ApiError.builder()
+            .status(400)
+            .error("Malformed Request")
+            .message("Request body is missing or malformed JSON")
+            .path(request.getRequestURI())
+            .timestamp(LocalDateTime.now())
+            .build();
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+
+    // ── 6. Catch-all ──────────────────────────────────────────────────
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiError> handleAll(
+            Exception ex,
+            HttpServletRequest request) {
+
+        log.error("Unhandled exception at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+
+        ApiError error = ApiError.builder()
+            .status(500)
+            .error("Internal Server Error")
+            .message("An unexpected error occurred")
+            .path(request.getRequestURI())
+            .timestamp(LocalDateTime.now())
+            .build();
+
+        return ResponseEntity.status(500).body(error);
+    }
+}
+```
+
+---
+
+## Error Response Examples
+
+```json
+// ── Bean Validation failure (400) ────────────────────────────────────
+POST /orders  { "quantity": -1, "email": "bad-email" }
+
+{
+  "status": 400,
+  "error": "Validation Failed",
+  "message": "Request has 2 validation error(s)",
+  "path": "/orders",
+  "timestamp": "2025-04-11T10:30:00",
+  "fieldErrors": [
+    {
+      "field": "quantity",
+      "rejectedValue": -1,
+      "message": "Quantity must be at least 1"
+    },
+    {
+      "field": "customerEmail",
+      "rejectedValue": "bad-email",
+      "message": "Invalid email format"
+    }
+  ]
+}
+
+// ── Business validation failure (422) ────────────────────────────────
+{
+  "status": 422,
+  "error": "Business Rule Violation",
+  "message": "Order exceeds customer credit limit. Available: 500.00",
+  "path": "/orders",
+  "timestamp": "2025-04-11T10:31:00"
+}
+```
+
+---
+
+## Tricky Interview Questions
+
+---
+
+**Q1. What is the difference between @NotNull, @NotEmpty, and @NotBlank? Give a case where using the wrong one causes a bug.**
+
+```
+ANSWER:
+=======
+
+@NotNull  --> value != null
+             PASSES:  ""  ,  "   "  ,  "hello"
+             FAILS:   null
+
+@NotEmpty --> value != null AND value.length() > 0
+             PASSES:  "   "  ,  "hello"
+             FAILS:   null  ,  ""
+
+@NotBlank --> value != null AND value.trim().length() > 0
+             PASSES:  "hello"
+             FAILS:   null  ,  ""  ,  "   "   (STRICTEST)
+
+BUG SCENARIO:
+  You validate a username field with @NotNull only.
+  Client sends: { "username": "   " }  (only spaces)
+  @NotNull passes -- it is not null.
+  You save "   " to the database as the username.
+  User logs in with "   " -- it matches and they are in.
+  Another user sends "   " -- DB unique constraint on username fails
+  with a cryptic SQL error instead of a clean validation message.
+
+  FIX: Always use @NotBlank for String fields that must have real content.
+
+ANOTHER TRAP:
+  @NotEmpty on a List field:
+  @NotEmpty List<String> items
+  Client sends: { "items": null }  --> FAILS (correct)
+  Client sends: { "items": [] }    --> FAILS (correct)
+  Client sends: { "items": [""] }  --> PASSES -- list has one element (empty string)
+  Use @NotEmpty on the list AND @NotBlank on the element:
+  List<@NotBlank String> items
+```
+
+---
+
+**Q2. What is the difference between @Valid and @Validated? When does each one fail silently?**
+
+```
+ANSWER:
+=======
+
+@Valid (javax/jakarta)
+  - Standard Bean Validation annotation
+  - Works on: @RequestBody, method parameters, fields
+  - Triggers: full validation of the object
+  - Does NOT support groups
+  - Does NOT work on path variables or query params directly
+
+@Validated (Spring)
+  - Spring's extension of @Valid
+  - Works on: @RequestBody, method parameters, CLASS level
+  - Triggers: validation with optional group selection
+  - SUPPORTS groups: @Validated(OnCreate.class)
+  - REQUIRED on the CLASS to validate path vars and query params
+
+SILENT FAILURE CASES:
+
+CASE 1: @Valid on path variable -- silently ignored
+  @GetMapping("/{id}")
+  public Order get(@PathVariable @Valid @NotBlank String id) { }
+  // @Valid here does NOTHING on path var
+  // @NotBlank also does NOTHING without @Validated on the class
+  // No error -- validation is silently skipped
+  FIX: Add @Validated on the controller class
+
+CASE 2: @Validated with group on a field that has no group
+  @Validated(OnCreate.class) @RequestBody CustomerRequest req
+  // Only constraints with groups = {OnCreate.class} fire
+  // Constraints with NO group (default group) are IGNORED
+  // @NotBlank with no groups = silently skipped
+  FIX: Add groups = {OnCreate.class} to each constraint
+       or include Default.class in your group hierarchy
+
+CASE 3: @Valid on nested object without @Valid on the field
+  public class OrderRequest {
+      private AddressRequest address;  // NO @Valid here
+  }
+  // Address fields are NEVER validated even if they have @NotNull etc.
+  // Hibernate Validator does NOT cascade validation automatically
+  FIX: Add @Valid on the nested field: @Valid private AddressRequest address;
+
+CASE 4: Self-invocation bypasses @Validated
+  // Just like @Async, calling a @Validated method from within
+  // the SAME class bypasses the Spring AOP proxy
+  // Validation is silently skipped
+  FIX: Inject the bean or move to a separate class
+```
+
+---
+
+**Q3. Your @RestControllerAdvice is not catching ConstraintViolationException from path variables. Why?**
+
+```
+ANSWER:
+=======
+Two reasons this commonly happens:
+
+REASON 1: @Validated is missing on the controller class
+  Without @Validated on the class, Spring does not apply the
+  MethodValidationPostProcessor proxy to the controller.
+  Path var constraints like @NotBlank, @Pattern fire nothing.
+  No exception is thrown -- validation is skipped entirely.
+
+  FIX:
+  @RestController
+  @Validated    // <-- MUST be here for path var / query param validation
+  public class OrderController { ... }
+
+REASON 2: Wrong exception type in @ExceptionHandler
+  Path var validation throws: ConstraintViolationException
+  Body validation throws:     MethodArgumentNotValidException
+  These are DIFFERENT exceptions with DIFFERENT handlers.
+
+  WRONG:
+  @ExceptionHandler(MethodArgumentNotValidException.class)
+  // this does NOT catch ConstraintViolationException from path vars
+
+  RIGHT: Need BOTH handlers:
+  @ExceptionHandler(MethodArgumentNotValidException.class)
+  public ResponseEntity<?> handleBody(...) { }   // for @RequestBody
+
+  @ExceptionHandler(ConstraintViolationException.class)
+  public ResponseEntity<?> handlePathVar(...) { } // for path/query params
+
+REASON 3: Exception thrown BEFORE reaching your advice
+  If an interceptor or filter throws before the controller,
+  @RestControllerAdvice may not see it.
+  FIX: Use a servlet Filter or ErrorController for those cases.
+
+SUMMARY TABLE:
+  Source of validation     Exception thrown
+  ─────────────────────────────────────────────────────────────────
+  @RequestBody + @Valid    MethodArgumentNotValidException
+  Path var + @Validated    ConstraintViolationException
+  Query param + @Validated ConstraintViolationException
+  Manual validator.validate ConstraintViolationException (if thrown)
+  @Service + @Validated    ConstraintViolationException
+```
+
+---
+
+**Q4. Can you validate a Kafka message or an object that does NOT come through a REST controller?**
+
+```
+ANSWER:
+=======
+YES -- use programmatic (manual) validation via the Validator API.
+
+Bean Validation works on ANY Java object, not just HTTP requests.
+The @Valid annotation just triggers it automatically in Spring MVC.
+For Kafka, scheduled jobs, internal service calls -- you trigger it manually.
+
+IMPLEMENTATION:
+
+// Inject the validator
+@Autowired
+private jakarta.validation.Validator validator;
+
+// In your Kafka consumer or service
+@KafkaListener(topics = "order-events")
+public void consume(OrderEvent event) {
+
+    // manually trigger Bean Validation
+    Set<ConstraintViolation<OrderEvent>> violations = validator.validate(event);
+
+    if (!violations.isEmpty()) {
+        String errors = violations.stream()
+            .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+            .collect(Collectors.joining(", "));
+
+        log.error("Invalid Kafka message: {}", errors);
+
+        // options:
+        // 1. send to dead-letter topic
+        // 2. throw exception (triggers retry/DLT)
+        // 3. skip and log (for non-critical)
+        kafkaTemplate.send("order-events.DLT", event);
+        return;
+    }
+
+    // valid -- process normally
+    orderService.process(event);
+}
+
+// You can also use @Validated on @Service methods:
+@Service
+@Validated   // Spring applies validation proxy to this service
+public class OrderService {
+
+    public void process(@Valid OrderRequest request) {
+        // ConstraintViolationException thrown if invalid
+        // even when called internally (not from controller)
+    }
+}
+
+// NOTE: @Validated on @Service has the same self-invocation problem as @Async
+// Calling process() from within the same class bypasses the proxy
+```
+
+---
+
+**Q5. What is the difference between 400 and 422? Which one should Bean Validation return?**
+
+```
+ANSWER:
+=======
+This is genuinely debated. Here is the precise distinction:
+
+400 Bad Request
+  The request is syntactically malformed.
+  Server cannot parse or understand it at all.
+  Examples:
+    - Invalid JSON syntax: { "name": "Manoj" (missing closing brace)
+    - Wrong Content-Type: sending XML when server expects JSON
+    - Missing required header
+    - Malformed multipart body
+
+422 Unprocessable Entity
+  The request is syntactically valid (parseable) but semantically invalid.
+  Server understands the structure but the CONTENT violates rules.
+  Examples:
+    - Valid JSON but { "quantity": -5 } violates business rule
+    - Valid JSON but { "email": "not-an-email" } fails format validation
+    - Valid JSON but startDate is after endDate (cross-field)
+    - Valid JSON but referenced productId does not exist in DB
+
+WHERE DOES BEAN VALIDATION FALL?
+  Arguments for 400:
+    "Email format is a syntactic/structural rule, not a business rule"
+    Spring Boot default: returns 400 for MethodArgumentNotValidException
+
+  Arguments for 422:
+    "Server could PARSE the request. The value is semantically wrong."
+    RFC 4918 definition of 422 fits Bean Validation perfectly.
+
+INDUSTRY PRACTICE:
+  Spring Boot default     --> 400 for all validation failures
+  Stripe, Twilio          --> 422 for field-level validation errors
+  GitHub                  --> 422 for semantic validation errors
+
+BEST ANSWER IN INTERVIEW:
+  "400 for malformed/unparseable requests.
+   422 for structurally valid but semantically invalid content.
+   In my implementation I map MethodArgumentNotValidException to 422
+   and HttpMessageNotReadableException (malformed JSON) to 400
+   to be precise about the distinction."
+
+  @ExceptionHandler(HttpMessageNotReadableException.class)  --> 400
+  @ExceptionHandler(MethodArgumentNotValidException.class)  --> 422 (override default)
+  @ExceptionHandler(BusinessValidationException.class)      --> 422
+```
+
+---
+
+**Q6. Can the same DTO be used for both create and update? What are the tradeoffs?**
+
+```
+ANSWER:
+=======
+Technically yes. In practice it creates problems.
+
+PROBLEM WITH ONE DTO:
+
+  public class CustomerRequest {
+      @Null           // null on create (server generates)
+      @NotNull        // required on update
+      private Long id;
+
+      @NotBlank       // required on create
+                      // optional on update (partial update)
+      private String name;
+  }
+
+  These constraints CONTRADICT each other on the same field.
+  You cannot express both rules without group validation.
+
+OPTION 1: Separate DTOs (cleanest)
+  CreateCustomerRequest  { name (required), email (required), no id }
+  UpdateCustomerRequest  { id (required), name (optional), email (optional) }
+
+  Pros: Each DTO is self-documenting, no conditional logic, clear OpenAPI docs
+  Cons: Code duplication if fields are similar (use inheritance to reduce)
+
+  class UpdateCustomerRequest extends CreateCustomerRequest {
+      @NotNull private Long id;
+  }
+
+OPTION 2: Group Validation (single DTO, different groups)
+  @Null(groups=OnCreate.class) @NotNull(groups=OnUpdate.class) Long id;
+  @NotBlank(groups=OnCreate.class) String name;
+
+  @Validated(OnCreate.class) in POST controller
+  @Validated(OnUpdate.class) in PUT controller
+
+  Pros: One DTO, less duplication
+  Cons: DTO becomes complex, groups are easy to forget, harder to read
+
+OPTION 3: Map-based PATCH (for partial updates)
+  PATCH /customers/1
+  { "name": "New Name" }   // only send what changed
+
+  Controller reads it as Map<String, Object> or JsonNode
+  Service applies only present fields
+  Pros: True partial update
+  Cons: Lose type safety, lose Bean Validation, harder to validate
+
+INTERVIEW BEST ANSWER:
+  "Separate DTOs for create and update for clarity and safety.
+   Group validation when DTOs are very similar and duplication is a concern.
+   Never the same DTO with conflicting constraints and no groups."
+```
+
+---
+
+**Q7. How do you prevent over-posting / mass assignment attacks in Spring Boot?**
+
+```
+ANSWER:
+=======
+Over-posting = client sends extra fields that get silently bound to the entity.
+
+ATTACK SCENARIO:
+  Your entity:
+  public class User {
+      private Long id;
+      private String name;
+      private String email;
+      private boolean isAdmin;    // should NEVER be set by client
+      private BigDecimal balance; // should NEVER be set by client
+  }
+
+  Client sends:
+  POST /users
+  { "name": "Manoj", "email": "m@m.com", "isAdmin": true, "balance": 99999 }
+
+  If you bind directly to User entity:
+  @PostMapping
+  public User create(@RequestBody User user) { }  // DANGEROUS
+  --> isAdmin = true is silently set  --> privilege escalation attack
+
+SOLUTIONS:
+
+SOLUTION 1: Use separate DTOs (best practice)
+  public class CreateUserRequest {
+      @NotBlank private String name;
+      @Email    private String email;
+      // isAdmin and balance are NOT in this DTO -- cannot be set
+  }
+
+  @PostMapping
+  public User create(@RequestBody CreateUserRequest request) {
+      User user = new User();
+      user.setName(request.getName());   // explicit mapping
+      user.setEmail(request.getEmail());
+      // isAdmin is never touched
+      return userRepository.save(user);
+  }
+
+SOLUTION 2: @JsonIgnore on sensitive fields
+  public class User {
+      @JsonIgnore
+      private boolean isAdmin;       // ignored during deserialization
+  }
+  // Simpler but less safe than DTO -- still couples entity to HTTP layer
+
+SOLUTION 3: @JsonProperty(access = READ_ONLY)
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private boolean isAdmin;
+  // Serialized in responses (client can read)
+  // Ignored during deserialization (client cannot write)
+
+SOLUTION 4: Disable unknown field deserialization
+  spring.jackson.deserialization.fail-on-unknown-properties=true
+  // Rejects requests with fields not in DTO -- strict but noisy
+
+INTERVIEW ANSWER:
+  "Always use separate request DTOs, never bind directly to JPA entities.
+   This prevents over-posting, keeps validation separate from persistence,
+   and decouples the API contract from the DB schema."
+```
+
+---
+
+## Quick-Fire Tricky Questions
+
+```
+Q: Can you use @Valid inside a @Service method?
+A: Not with @Valid alone. Use @Validated on the class and @Valid on the
+   method parameter. Spring wraps the bean in a proxy that intercepts calls.
+   Self-invocation (calling from same class) bypasses the proxy -- no validation.
+
+Q: What happens if two @ExceptionHandler methods handle the same exception?
+A: Spring picks the most specific one (closest in hierarchy).
+   If equal specificity, the first one declared wins.
+   If one is in a local @Controller and one in @RestControllerAdvice,
+   the local one takes priority.
+
+Q: Does @Valid work on return values?
+A: YES. @Valid on a method return value validates the response object.
+   Useful to catch bugs where your service returns invalid data.
+   @Valid public OrderResponse create(...) { }
+   Throws ConstraintViolationException if the returned object fails validation.
+
+Q: Can you have multiple @RestControllerAdvice classes?
+A: YES. Use @Order(1), @Order(2) to control priority.
+   Or use basePackages to scope each advice to specific controllers.
+   Most specific advice (local) always overrides global advice.
+
+Q: What is the difference between fail-fast and fail-safe validation?
+A: Fail-fast (default): stops at first constraint violation, returns one error.
+   Fail-safe (collect all): continues after failure, returns ALL errors.
+   Hibernate Validator default = collect ALL violations (not fail-fast).
+   You get all field errors in MethodArgumentNotValidException at once.
+   To make it truly fail-fast: customize the validator with failFast(true).
+
+Q: @NotNull is on a field but client does not send the field at all. Does it fail?
+A: YES. Missing JSON field = null in Java = @NotNull fails.
+   { } with no "quantity" field --> quantity = null --> @NotNull violation.
+   If you want to allow missing fields, use @Valid with Optional<> or
+   set a default value in the DTO constructor.
+
+Q: Can you validate enum values coming in as String?
+A: @Enumerated does not help here -- that is for JPA persistence.
+   For incoming String --> enum conversion, use:
+   1. Custom @ValidOrderStatus annotation (shown above)
+   2. @JsonCreator on enum + @Pattern on String field
+   3. Custom deserializer: throw 400 in @JsonCreator if invalid value
+   The cleanest approach: accept as String, validate with custom annotation,
+   convert to enum in service layer.
+```
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

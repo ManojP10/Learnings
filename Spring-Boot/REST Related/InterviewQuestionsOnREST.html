@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's an in-depth set of tricky REST interview questions with answers — grouped by difficulty.
+
+---
+
+## Level 1 — Fundamentals (But Tricky Framing)
+
+---
+
+**Q1. REST is stateless — but your app has a login session. Is that a contradiction?**
+
+```
+ANSWER:
+=======
+Yes, if you implement it wrong. No, if you understand the distinction.
+
+HTTP session (server-side) = STATEFUL -- violates REST
+JWT token (client-side)    = STATELESS -- follows REST
+
+REST statelessness means:
+  Each request must contain ALL information needed to process it.
+  Server should NOT store client session state between requests.
+
+WRONG (stateful -- not REST):
+  Client logs in --> server stores session in HttpSession (memory/Redis)
+  Client sends session cookie --> server looks up session to identify user
+  Problem: server has to remember who you are between requests
+
+RIGHT (stateless -- true REST):
+  Client logs in --> server returns JWT token
+  Client sends JWT in every request header: Authorization: Bearer <token>
+  Server verifies token on EACH request (self-contained, no server memory)
+  Server remembers nothing between requests
+
+  +--------+   POST /login    +--------+   returns JWT    +--------+
+  | Client | ---------------> | Server | ---------------> | Client |
+  +--------+                  +--------+                  +--------+
+                                                              |
+                                                              | GET /orders
+                                                              | Authorization: Bearer eyJ...
+                                                              v
+                                                          +--------+
+                                                          | Server | verifies JWT locally
+                                                          +--------+ no session lookup needed
+
+TRICK: Caching (CDN, Redis) is fine. That is SERVER-SIDE caching of resources,
+       not session state. REST allows caching -- it is one of its 6 constraints.
+```
+
+---
+
+**Q2. What is the difference between PUT and PATCH? Give a case where using PUT incorrectly causes data loss.**
+
+```
+ANSWER:
+=======
+
+PUT   = FULL replacement of the resource
+PATCH = PARTIAL update of the resource
+
+Example entity in DB:
+{
+  "id": 1,
+  "name": "Manoj",
+  "email": "manoj@demo.com",
+  "phone": "9999999999"
+}
+
+SCENARIO: Frontend wants to update only the email.
+
+WRONG -- using PUT with partial body:
+  PUT /users/1
+  { "email": "new@demo.com" }
+
+  Hibernate receives this, maps it to User object:
+  User { id=1, name=null, email="new@demo.com", phone=null }
+  Saves it --> name and phone are now NULL in DB  <-- DATA LOSS
+
+RIGHT -- using PUT (must send full object):
+  PUT /users/1
+  { "name": "Manoj", "email": "new@demo.com", "phone": "9999999999" }
+  Full replacement -- safe.
+
+RIGHT -- using PATCH (send only what changes):
+  PATCH /users/1
+  { "email": "new@demo.com" }
+  Server applies only the email change, leaves rest untouched.
+
+IDEMPOTENCY:
+  PUT   is idempotent -- calling it 10 times = same result as 1 time
+  PATCH is NOT guaranteed idempotent -- depends on implementation
+        e.g. PATCH { "quantity": "+1" } called 10 times = adds 10
+             PATCH { "quantity": 5   } called 10 times = always sets to 5
+
+INTERVIEW TRAP: "Is PATCH idempotent?"
+  Answer: It CAN be, but is NOT required to be by the HTTP spec.
+          PUT is always required to be idempotent.
+```
+
+---
+
+**Q3. What is the difference between 401 and 403?**
+
+```
+ANSWER:
+=======
+
+401 Unauthorized = "I don't know WHO you are"   (authentication problem)
+403 Forbidden    = "I know WHO you are, but NO"  (authorization problem)
+
+401: No token / invalid token / expired token
+     Response must include: WWW-Authenticate header
+     Client should: re-authenticate (login again)
+
+403: Valid token, but user lacks permission
+     Client should: NOT retry -- access is denied by policy
+
+EXAMPLE:
+  GET /admin/reports  (no token)          --> 401 Unauthorized
+  GET /admin/reports  (valid user token)  --> 403 Forbidden  (user is not admin)
+  GET /admin/reports  (valid admin token) --> 200 OK
+
+TRICK QUESTION: "Can a request be 401 AND 403?"
+  No. They are mutually exclusive.
+  If server can identify you (valid token) --> it is 401 or 403 based on permission.
+  If server cannot identify you            --> it is always 401.
+
+COMMON MISTAKE IN INTERVIEWS:
+  Many say 401 = "not logged in", 403 = "not authorized".
+  Technically 401 = unauthenticated, 403 = unauthorized (authenticated but forbidden).
+  The naming "401 Unauthorized" in HTTP spec is historically misleading.
+```
+
+---
+
+**Q4. GET is supposed to be safe and idempotent. Can a GET request change server state?**
+
+```
+ANSWER:
+=======
+Technically YES -- but it SHOULD NOT by REST convention.
+
+"Safe"       = should not modify server state
+"Idempotent" = multiple identical calls = same result as one call
+
+Safe      --> GET, HEAD, OPTIONS
+Idempotent --> GET, HEAD, PUT, DELETE, OPTIONS (NOT POST, NOT PATCH)
+
+REAL-WORLD cases where GET DOES change state (and why they are bad):
+  1. GET /deleteUser?id=5      -- classic mistake, changes state via GET
+  2. GET /report (increments a view counter) -- side effect, technically violates safe
+  3. Tracking pixels (ads)    -- GET request records an analytics event
+
+WHY IT MATTERS:
+  Browsers, CDNs, proxies ASSUME GET is safe.
+  Browser prefetch will fire GET requests automatically.
+  If GET /deleteUser?id=5 exists, a prefetch could delete your data.
+  Google's web crawler once wiped entire websites this way (early 2000s).
+
+IDEMPOTENCY TABLE:
+  Method    Safe?   Idempotent?
+  ────────────────────────────
+  GET       YES     YES
+  HEAD      YES     YES
+  OPTIONS   YES     YES
+  POST      NO      NO
+  PUT       NO      YES
+  PATCH     NO      NO (usually)
+  DELETE    NO      YES
+```
+
+---
+
+## Level 2 — Design & Behavior
+
+---
+
+**Q5. How do you version a REST API? Which approach is best and why?**
+
+```
+ANSWER:
+=======
+Four approaches:
+
+1. URI VERSIONING (most common)
+   GET /api/v1/orders
+   GET /api/v2/orders
+
+   Pros:  Simple, visible, easy to test in browser, easy to route in gateway
+   Cons:  URI should identify a resource, not a version -- purists say this
+          violates REST (URI should be stable)
+   Used by: Twitter, Stripe, Google
+
+2. HEADER VERSIONING
+   GET /api/orders
+   Header: API-Version: 2
+
+   Pros:  Clean URI, truly RESTful
+   Cons:  Not visible in browser, harder to test, clients must set header
+   Used by: GitHub (X-GitHub-Media-Type header)
+
+3. ACCEPT HEADER (Media Type / Content Negotiation)
+   GET /api/orders
+   Accept: application/vnd.myapp.v2+json
+
+   Pros:  Most "correct" by REST spec, leverages HTTP content negotiation
+   Cons:  Complex, verbose, hard to test without tools
+   Used by: GitHub API v3
+
+4. QUERY PARAM VERSIONING
+   GET /api/orders?version=2
+
+   Pros:  Easy to implement
+   Cons:  Query params are for filtering, not versioning -- semantically wrong
+          Not cacheable by some CDNs
+
+INTERVIEW BEST ANSWER:
+  "URI versioning for public APIs -- it is visible, cacheable, and easy to
+   route at gateway level. Header versioning for internal APIs where URI
+   stability matters more. Never query param versioning in production."
+
+SPRING BOOT IMPLEMENTATION:
+  @RestController
+  @RequestMapping("/api/v1/orders")
+  public class OrderControllerV1 { ... }
+
+  @RestController
+  @RequestMapping("/api/v2/orders")
+  public class OrderControllerV2 { ... }
+```
+
+---
+
+**Q6. What is HATEOAS? Does anyone actually use it?**
+
+```
+ANSWER:
+=======
+HATEOAS = Hypermedia As The Engine Of Application State
+          One of REST's 6 constraints. Least followed in practice.
+
+CONCEPT:
+  API response includes links to what the client can do NEXT.
+  Client does not need to hardcode URLs -- discovers them from the response.
+
+WITHOUT HATEOAS (standard API response):
+  GET /orders/123
+  {
+    "id": "123",
+    "status": "PLACED",
+    "amount": 999.00
+  }
+  Client has to KNOW that to confirm it should call POST /orders/123/confirm
+  Client hardcodes that URL -- tight coupling
+
+WITH HATEOAS:
+  GET /orders/123
+  {
+    "id": "123",
+    "status": "PLACED",
+    "amount": 999.00,
+    "_links": {
+      "self":    { "href": "/orders/123" },
+      "confirm": { "href": "/orders/123/confirm", "method": "POST" },
+      "cancel":  { "href": "/orders/123/cancel",  "method": "DELETE" },
+      "customer":{ "href": "/customers/42" }
+    }
+  }
+  Client reads links from response -- no hardcoded URLs
+
+SPRING HATEOAS:
+  @GetMapping("/{id}")
+  public EntityModel<Order> getOrder(@PathVariable String id) {
+      Order order = orderService.getOrder(id);
+      return EntityModel.of(order,
+          linkTo(methodOn(OrderController.class).getOrder(id)).withSelfRel(),
+          linkTo(methodOn(OrderController.class).confirm(id)).withRel("confirm")
+      );
+  }
+
+DOES ANYONE USE IT?
+  Honest answer: Rarely in practice.
+  PayPal uses it. Most startups and internal APIs skip it.
+  Why skipped: added complexity, frontend teams often prefer known contracts,
+               OpenAPI/Swagger already documents available operations.
+
+INTERVIEW TIP:
+  Know it exists, know what problem it solves, know Spring HATEOAS.
+  Say: "Level 3 Richardson Maturity Model -- most production APIs sit at Level 2."
+```
+
+---
+
+**Q7. What is Richardson Maturity Model?**
+
+```
+ANSWER:
+=======
+A model that grades how "RESTful" an API is across 4 levels.
+
+LEVEL 0 -- The Swamp of POX (Plain Old XML)
+  One URI, one method, everything is POST.
+  This is basically SOAP or RPC over HTTP.
+  POST /orderService  { "action": "getOrder", "id": 123 }
+  POST /orderService  { "action": "createOrder", ... }
+
+LEVEL 1 -- Resources
+  Multiple URIs, one per resource. Still only POST.
+  POST /orders
+  POST /orders/123
+  POST /customers
+  Better: resources identified, but HTTP methods not used semantically.
+
+LEVEL 2 -- HTTP Verbs  (WHERE MOST REST APIs LIVE)
+  Multiple URIs + correct HTTP methods + correct status codes.
+  GET    /orders       --> list orders
+  POST   /orders       --> create order
+  GET    /orders/123   --> get order
+  PUT    /orders/123   --> update order
+  DELETE /orders/123   --> delete order
+  This is what most people call "REST API" in interviews.
+
+LEVEL 3 -- Hypermedia (HATEOAS)
+  Level 2 + responses include links to next possible actions.
+  True REST by Roy Fielding's definition.
+  Rarely implemented fully in practice.
+
+  +-------+    +-----------------------------+    +------------------------+
+  | Level | -> | What you do                 | -> | Example                |
+  +-------+    +-----------------------------+    +------------------------+
+  |   0   |    | One endpoint, all POST      |    | POST /api {"action":..}|
+  |   1   |    | Multiple endpoints, all POST|    | POST /orders/123       |
+  |   2   |    | Endpoints + HTTP verbs      |    | GET/POST/PUT/DELETE    |
+  |   3   |    | Level 2 + hypermedia links  |    | _links in response     |
+  +-------+    +-----------------------------+    +------------------------+
+
+INTERVIEW ANSWER: "Most production REST APIs are Level 2. Level 3 adds
+  discoverability via HATEOAS but is rarely implemented due to complexity."
+```
+
+---
+
+**Q8. POST is not idempotent. What problem does this cause and how do you solve it?**
+
+```
+ANSWER:
+=======
+PROBLEM:
+  POST /orders  { "productId": "P1", "qty": 1 }
+
+  If client sends this request and gets a NETWORK TIMEOUT:
+    - Did the server create the order? Client does not know.
+    - Client retries --> POST /orders again
+    - Server creates a SECOND order --> duplicate order  <-- BAD
+
+  This is the "at-least-once delivery" problem.
+
+SOLUTION 1: Idempotency Key (best practice, used by Stripe)
+  Client generates a UUID before sending the request.
+  Sends it as a header: Idempotency-Key: uuid-abc-123
+
+  Server:
+    1. Checks if this key was seen before.
+    2. If YES --> return the SAME response as the first time (no duplicate).
+    3. If NO  --> process request, store key + response in Redis/DB.
+
+  Client retries with SAME key --> gets same response, no duplicate order.
+
+  IMPLEMENTATION:
+  @PostMapping("/orders")
+  public ResponseEntity<Order> create(
+          @RequestHeader("Idempotency-Key") String idempotencyKey,
+          @RequestBody OrderRequest request) {
+
+      // check Redis / DB for this key
+      Optional<Order> existing = idempotencyStore.get(idempotencyKey);
+      if (existing.isPresent()) {
+          return ResponseEntity.ok(existing.get());  // return cached response
+      }
+
+      Order order = orderService.createOrder(request);
+      idempotencyStore.save(idempotencyKey, order, Duration.ofHours(24));
+      return ResponseEntity.status(201).body(order);
+  }
+
+SOLUTION 2: Conditional requests
+  Use ETags and If-None-Match headers to detect duplicates.
+  More complex, used for update conflicts rather than creation.
+
+INTERVIEW TIP: Stripe's payment API uses Idempotency-Key exactly this way.
+  Mention it -- interviewers love real-world examples.
+```
+
+---
+
+## Level 3 — Advanced & Tricky
+
+---
+
+**Q9. What is the difference between REST and HTTP? People often confuse them.**
+
+```
+ANSWER:
+=======
+HTTP  = a PROTOCOL (rules for transferring data over the network)
+REST  = an ARCHITECTURAL STYLE (set of constraints for designing APIs)
+
+REST does NOT require HTTP.
+  REST can be implemented over any protocol -- WebSockets, FTP, AMQP.
+  In practice, everyone uses REST over HTTP because HTTP already has
+  the verbs (GET/POST/PUT/DELETE), headers, and status codes REST needs.
+
+HTTP does NOT require REST.
+  You can use HTTP in non-RESTful ways:
+  POST /getUserById?id=5    --> HTTP but NOT REST (verb in URI, not resource-based)
+  SOAP over HTTP            --> HTTP but NOT REST
+
+THE RELATIONSHIP:
+  REST uses HTTP as its transport and leverages:
+    HTTP METHODS  --> maps to CRUD (GET=Read, POST=Create, PUT=Update, DELETE=Delete)
+    HTTP HEADERS  --> Content-Type, Accept, Authorization, Cache-Control
+    HTTP STATUS   --> 200, 201, 400, 401, 403, 404, 409, 500
+    HTTP URI      --> identifies resources (/orders/123)
+
+ANALOGY:
+  HTTP = roads and traffic signals
+  REST = rules for how to drive on those roads (stay in lane, use signals)
+  SOAP = a specific heavy vehicle that also runs on the same roads
+
+COMMON MISTAKE: "REST API uses HTTP" is true.
+                "REST = HTTP" is FALSE.
+```
+
+---
+
+**Q10. What happens when you call DELETE on a resource twice? What should the response be?**
+
+```
+ANSWER:
+=======
+DELETE is IDEMPOTENT -- the end STATE is the same regardless of how many times called.
+But the HTTP RESPONSE can differ between first and second call.
+
+FIRST CALL:
+  DELETE /orders/123   --> 204 No Content  (deleted successfully)
+
+SECOND CALL (strict interpretation):
+  DELETE /orders/123   --> 404 Not Found   (resource no longer exists)
+
+SECOND CALL (lenient/idempotent interpretation):
+  DELETE /orders/123   --> 204 No Content  (goal achieved: resource is gone)
+
+WHICH IS CORRECT?
+  Both are valid. The HTTP spec says DELETE is idempotent in terms of
+  SERVER STATE -- the resource stays deleted. The spec does NOT mandate
+  that the response code be the same both times.
+
+  Stripe and GitHub return 404 on second DELETE.
+  Some APIs return 204 both times for simpler client logic.
+
+INTERVIEW TRAP:
+  "If DELETE returns 404 on second call, is it still idempotent?"
+  YES. Idempotency is about STATE, not response code.
+  State after 1 DELETE = resource gone.
+  State after 2 DELETEs = resource still gone.
+  Same state = idempotent.  The 404 is just informational.
+
+SOFT DELETE TWIST:
+  If your API implements soft delete (sets deleted_at timestamp):
+  First DELETE  --> 204, sets deleted_at
+  Second DELETE --> depends: 404 (already deleted) or 204 (already done)
+  If you return 204 both times but the second call does nothing -- still idempotent.
+```
+
+---
+
+**Q11. What is the difference between 400, 404, 409, and 422? When to use each?**
+
+```
+ANSWER:
+=======
+
+400 Bad Request
+  Request is malformed -- server cannot parse it.
+  JSON is invalid syntax, missing required header, wrong content-type.
+  Example: sending XML when server expects JSON.
+  "I cannot even understand what you sent."
+
+404 Not Found
+  Request is valid but resource does not exist.
+  GET /orders/999 -- order 999 does not exist.
+  "I understood your request but that thing is not here."
+  TRICK: Also return 404 when you don't want to reveal a resource EXISTS
+         for security (e.g. /admin/users/123 returns 404 for non-admins
+         instead of 403, to hide that the user exists).
+
+409 Conflict
+  Request is valid, resource exists, but there is a STATE CONFLICT.
+  POST /orders when that orderId already exists.
+  PUT /users/1 with an email already taken by another user.
+  Optimistic locking failure (version mismatch).
+  "I understood, the resource is here, but something conflicts."
+
+422 Unprocessable Entity
+  Request is syntactically valid (parseable JSON) but semantically wrong.
+  POST /orders { "quantity": -5 }  -- valid JSON, but -5 quantity makes no sense.
+  POST /orders { "productId": "NONEXISTENT" }  -- valid format, invalid business rule.
+  "I could parse it, but the content makes no business sense."
+
+DECISION TREE:
+  Can I parse the request?
+    NO  --> 400 Bad Request
+    YES --> Does the resource exist?
+              NO  --> 404 Not Found
+              YES --> Is there a state conflict?
+                        YES --> 409 Conflict
+              Does it violate business rules?
+                        YES --> 422 Unprocessable Entity
+                        NO  --> 200 / 201 / 204
+
+SPRING EXAMPLE:
+  @ExceptionHandler(MethodArgumentNotValidException.class) --> 400
+  @ExceptionHandler(EntityNotFoundException.class)         --> 404
+  @ExceptionHandler(DataIntegrityViolationException.class) --> 409
+  @ExceptionHandler(BusinessException.class)               --> 422
+```
+
+---
+
+**Q12. Can REST APIs be asynchronous? How do you design a long-running REST operation?**
+
+```
+ANSWER:
+=======
+YES. The pattern is called "Asynchronous Request-Reply" or "Polling pattern."
+
+PROBLEM:
+  POST /reports/generate  -- takes 5 minutes to run
+  If you hold the HTTP connection for 5 minutes:
+    - Client times out
+    - Load balancer times out
+    - Gateway times out
+  BAD design.
+
+SOLUTION -- 3-step async pattern:
+
+STEP 1: Accept & return immediately
+  POST /reports/generate
+  { "type": "monthly", "month": "2024-03" }
+
+  Response: 202 Accepted  (NOT 200, NOT 201)
+  {
+    "jobId": "job-uuid-abc",
+    "status": "PENDING",
+    "statusUrl": "/jobs/job-uuid-abc"   <-- where to poll
+  }
+
+  202 means: "I received it and will process it, but not done yet."
+
+STEP 2: Client polls for status
+  GET /jobs/job-uuid-abc
+  {
+    "jobId": "job-uuid-abc",
+    "status": "IN_PROGRESS",
+    "progress": 45
+  }
+
+  GET /jobs/job-uuid-abc  (poll again after a few seconds)
+  {
+    "jobId": "job-uuid-abc",
+    "status": "COMPLETED",
+    "resultUrl": "/reports/report-2024-03.pdf"
+  }
+
+STEP 3: Fetch the result
+  GET /reports/report-2024-03.pdf  --> 200 OK with the report
+
+ALTERNATIVES TO POLLING:
+  Webhooks: Server calls CLIENT'S URL when done (push instead of pull).
+            POST https://yourclient.com/webhook/report-done { ... }
+
+  SSE (Server-Sent Events): Server pushes progress updates over open connection.
+  WebSocket: Bidirectional -- server pushes status, client can cancel.
+
+STATUS CODE SUMMARY:
+  202 Accepted       = job created, processing async
+  200 OK             = job status (still running or complete)
+  303 See Other      = redirect to result resource when done
+  410 Gone           = job result expired / cleaned up
+
+SPRING BOOT:
+  @PostMapping("/reports/generate")
+  public ResponseEntity<JobResponse> generate(@RequestBody ReportRequest req) {
+      String jobId = jobService.submitAsync(req);  // @Async internally
+      URI statusUri = URI.create("/jobs/" + jobId);
+      return ResponseEntity.accepted()             // 202
+          .header("Content-Location", statusUri.toString())
+          .body(new JobResponse(jobId, "PENDING", statusUri.toString()));
+  }
+```
+
+---
+
+**Q13. What is content negotiation in REST?**
+
+```
+ANSWER:
+=======
+Content negotiation = client and server agree on the FORMAT of the response.
+
+CLIENT TELLS SERVER what it wants via Accept header:
+  GET /orders/123
+  Accept: application/json         --> wants JSON
+  Accept: application/xml          --> wants XML
+  Accept: text/csv                 --> wants CSV
+  Accept: application/json, application/xml;q=0.9  --> prefers JSON, XML as fallback
+                                                       (q = quality factor, 0-1)
+
+SERVER TELLS CLIENT what it sent via Content-Type header:
+  Response: Content-Type: application/json
+
+SERVER TELLS CLIENT what it received via Content-Type on request:
+  POST /orders
+  Content-Type: application/json   --> "I am sending you JSON"
+  { "productId": "P1" }
+
+WHAT HAPPENS IF SERVER CAN'T SATISFY Accept?
+  406 Not Acceptable -- server cannot produce the requested format.
+
+SPRING BOOT IMPLEMENTATION:
+  @GetMapping(
+      value    = "/orders/{id}",
+      produces = { MediaType.APPLICATION_JSON_VALUE,
+                   MediaType.APPLICATION_XML_VALUE }
+  )
+  public Order getOrder(@PathVariable String id) {
+      return orderService.getOrder(id);
+      // Spring auto-serializes to JSON or XML based on Accept header
+  }
+
+  // For XML support, add to pom.xml:
+  // jackson-dataformat-xml dependency
+
+TRICK QUESTION: "What is the difference between Content-Type and Accept?"
+  Content-Type = describes what YOU are SENDING in the request body
+  Accept       = describes what YOU WANT to RECEIVE in the response
+```
+
+---
+
+## Quick-Fire Tricky Questions
+
+```
+  Q: What HTTP method is used to get only the headers without the body?
+  A: HEAD -- identical to GET but server returns no response body.
+     Use case: check if resource exists, get Content-Length without downloading.
+
+  Q: What is the difference between 301 and 302?
+  A: 301 Moved Permanently -- update your bookmark, resource is here forever now.
+     302 Found (Moved Temporarily) -- keep your old URL, this is just for now.
+     TRICK: 301 allows browser/CDN to cache redirect. 302 does not.
+     POST + 302 = browser re-sends POST (dangerous). Use 303 See Other instead.
+
+  Q: Can you send a body with GET?
+  A: Technically yes (HTTP spec does not forbid it).
+     Practically NO -- proxies, CDNs, and servers may strip or reject GET bodies.
+     ElasticSearch's search API uses GET with body (controversial but real).
+
+  Q: What is the difference between 500 and 503?
+  A: 500 Internal Server Error = something crashed (bug, NullPointerException).
+     503 Service Unavailable   = server is up but overloaded or in maintenance.
+     503 should include Retry-After header to tell client when to retry.
+
+  Q: What does OPTIONS method do?
+  A: Returns what HTTP methods are allowed on a resource.
+     Used by browsers for CORS preflight: "Can I call this API cross-origin?"
+     Browser sends OPTIONS first, server replies with Access-Control-Allow-* headers.
+
+  Q: Is a REST API with only POST requests still REST?
+  A: No. Using wrong HTTP methods violates the uniform interface constraint.
+     It becomes RPC (Remote Procedure Call) over HTTP, not REST.
+     REST requires semantically correct use of HTTP methods.
+
+  Q: What is the correct status code when you create a resource?
+  A: 201 Created -- with a Location header pointing to the new resource.
+     Location: /orders/new-order-id
+     NOT 200 OK (that means request succeeded, not resource created).
+
+  Q: What is the difference between authentication and authorization?
+  A: Authentication = WHO are you? (login, token verification)
+     Authorization  = WHAT can you do? (permissions, roles)
+     Auth happens BEFORE authz every time.
+```
+
+---
+
+## Interview Tip Summary
+
+```
+  TOPIC                     WHAT INTERVIEWERS WANT TO HEAR
+  ──────────────────────────────────────────────────────────────────────────
+  Idempotency               Know which methods are idempotent and WHY (state)
+  Status codes              400 vs 422, 401 vs 403, 201 vs 200, 202 vs 200
+  Versioning                URI versioning for public, header for internal
+  Statelessness             JWT not session, every request self-contained
+  N+1 in REST               Pagination, sparse fieldsets, compound documents
+  HATEOAS                   Know it, know why it is rarely used in practice
+  Richardson Maturity       Level 0 to 3, most APIs are Level 2
+  Async REST                202 Accepted + polling or webhook pattern
+  Content negotiation       Accept vs Content-Type headers
+  Idempotency key           Stripe pattern for safe POST retries
+```
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

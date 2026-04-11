@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's every major comparison in table format — interview-focused.
+
+---
+
+## List Comparisons
+
+**ArrayList vs Vector**
+
+| Feature | ArrayList | Vector |
+|---|---|---|
+| Introduced | Java 1.2 | Java 1.0 (legacy) |
+| Thread-safe | No | Yes (every method synchronized) |
+| Performance | Fast (no sync overhead) | Slow (lock on every read/write) |
+| Growth factor | 50% (1.5x current size) | 100% (doubles) |
+| Iterator | Fail-fast | Fail-fast |
+| Recommendation | Always prefer | Never use in new code |
+| Alternative for thread-safety | `CopyOnWriteArrayList` / `Collections.synchronizedList()` | — |
+
+---
+
+**ArrayList vs LinkedList**
+
+| Feature | ArrayList | LinkedList |
+|---|---|---|
+| Internal structure | Dynamic array (`Object[]`) | Doubly linked list (Node objects) |
+| `get(index)` | O(1) — direct index | O(n) — must traverse |
+| `add(end)` | O(1) amortized | O(1) |
+| `add(middle)` | O(n) — shifts elements | O(n) — traverse + O(1) insert |
+| `remove(index)` | O(n) — shifts elements | O(n) — traverse + O(1) remove |
+| Memory | Less — just array | More — two pointers per node |
+| Cache performance | High — contiguous memory | Low — scattered nodes |
+| Implements | `List` | `List`, `Deque`, `Queue` |
+| Null allowed | Yes | Yes |
+| When to use | Default choice, random access | Frequent insert/delete at known iterator position, or need Deque |
+
+---
+
+**ArrayList vs CopyOnWriteArrayList**
+
+| Feature | ArrayList | CopyOnWriteArrayList |
+|---|---|---|
+| Thread-safe | No | Yes |
+| Read performance | Fast (no lock) | Fast (no lock — reads snapshot) |
+| Write performance | Fast | Slow — copies entire array on every write |
+| Iterator | Fail-fast (throws `ConcurrentModificationException`) | Fail-safe (iterates snapshot, no exception) |
+| Sees latest changes during iteration | Yes (but throws if modified) | No — sees snapshot at iterator creation time |
+| Memory | Less | More — copy on write |
+| When to use | Single-threaded | Multi-threaded, read-heavy, rarely written (event listeners) |
+
+---
+
+**Stack vs ArrayDeque (as Stack)**
+
+| Feature | `java.util.Stack` | `ArrayDeque` |
+|---|---|---|
+| Introduced | Java 1.0 (legacy) | Java 1.6 |
+| Extends | `Vector` | `AbstractCollection` |
+| Thread-safe | Yes (inherits Vector sync) | No |
+| Performance | Slow (synchronized) | Fast |
+| Push | `push()` | `push()` / `addFirst()` |
+| Pop | `pop()` | `pop()` / `removeFirst()` |
+| Peek | `peek()` | `peek()` / `peekFirst()` |
+| Java docs recommendation | Avoid — use `Deque` instead | Preferred Stack implementation |
+| Null allowed | Yes | No |
+
+---
+
+## Set Comparisons
+
+**HashSet vs LinkedHashSet vs TreeSet**
+
+| Feature | HashSet | LinkedHashSet | TreeSet |
+|---|---|---|---|
+| Internal structure | `HashMap` | `LinkedHashMap` | `TreeMap` (Red-Black Tree) |
+| Order | No order | Insertion order | Sorted (natural / Comparator) |
+| `add()` / `contains()` | O(1) | O(1) | O(log n) |
+| Null allowed | 1 null | 1 null | No null (needs `compareTo`) |
+| Thread-safe | No | No | No |
+| Duplicates | No | No | No (uses `compareTo`, not `equals`) |
+| When to use | Unique elements, order irrelevant | Unique + preserve insertion order | Unique + always sorted, range queries |
+
+---
+
+**HashSet vs TreeSet — Equality Check**
+
+| Feature | HashSet | TreeSet |
+|---|---|---|
+| Equality determined by | `hashCode()` + `equals()` | `compareTo()` or `Comparator.compare()` |
+| Two objects where `equals()=false` but `compareTo()=0` | Both stored (two entries) | Only one stored — treated as duplicate |
+| Two objects where `equals()=true` but different `hashCode()` | Both stored (broken contract bug) | One stored (compareTo decides) |
+| Danger | Violating `hashCode/equals` contract silently breaks uniqueness | Comparator returning 0 silently drops elements |
+
+---
+
+## Queue Comparisons
+
+**PriorityQueue vs ArrayDeque vs LinkedList (as Queue)**
+
+| Feature | PriorityQueue | ArrayDeque | LinkedList |
+|---|---|---|---|
+| Internal structure | Min-heap (array) | Circular array | Doubly linked list |
+| Order | Priority (min by default) | FIFO (insertion order) | FIFO (insertion order) |
+| `poll()` | O(log n) — heap re-order | O(1) | O(1) |
+| `peek()` | O(1) | O(1) | O(1) |
+| `add()` | O(log n) | O(1) amortized | O(1) |
+| Null allowed | No | No | Yes |
+| Thread-safe | No | No | No |
+| Iteration order | Undefined (heap array) | Insertion order | Insertion order |
+| When to use | Task scheduling, Dijkstra, top-K problems | Default Stack/Queue | Need null elements in queue |
+
+---
+
+**ArrayDeque vs LinkedList (as Deque)**
+
+| Feature | ArrayDeque | LinkedList |
+|---|---|---|
+| Internal structure | Circular resizable array | Doubly linked list |
+| Memory | Less — no node overhead | More — two pointers per node |
+| Cache performance | High — contiguous | Low — scattered |
+| `addFirst/addLast` | O(1) amortized | O(1) |
+| `removeFirst/removeLast` | O(1) | O(1) |
+| Null allowed | No | Yes |
+| Preferred as | Stack and Queue | When nulls needed |
+| Java docs says | Faster than `LinkedList` for Stack/Queue | — |
+
+---
+
+**ArrayBlockingQueue vs LinkedBlockingQueue**
+
+| Feature | ArrayBlockingQueue | LinkedBlockingQueue |
+|---|---|---|
+| Internal structure | Fixed-size array | Linked nodes |
+| Capacity | Bounded (must specify at creation) | Optionally bounded (default `Integer.MAX_VALUE`) |
+| Memory | Predictable — pre-allocated | Dynamic — allocates nodes |
+| Throughput | Lower (single lock for put + take) | Higher (separate locks for put and take) |
+| `put()` when full | Blocks | Blocks |
+| `take()` when empty | Blocks | Blocks |
+| When to use | Fixed-size buffer, predictable memory | Higher throughput producer-consumer |
+
+---
+
+## Map Comparisons
+
+**HashMap vs Hashtable**
+
+| Feature | HashMap | Hashtable |
+|---|---|---|
+| Introduced | Java 1.2 | Java 1.0 (legacy) |
+| Thread-safe | No | Yes (every method synchronized) |
+| Performance | Fast | Slow |
+| Null key | 1 null key allowed | No null key |
+| Null value | Multiple nulls allowed | No null value |
+| Iterator | Fail-fast | Fail-fast (Enumerator is not) |
+| Extends | `AbstractMap` | `Dictionary` (old hierarchy) |
+| Recommendation | Prefer always | Never use in new code |
+| Thread-safe alternative | `ConcurrentHashMap` | — |
+
+---
+
+**HashMap vs LinkedHashMap**
+
+| Feature | HashMap | LinkedHashMap |
+|---|---|---|
+| Internal structure | Array of buckets | Array of buckets + doubly linked list |
+| Order | No order | Insertion order (default) or Access order |
+| Memory | Less | More — extra prev/next pointers |
+| `get/put` | O(1) | O(1) |
+| Access order mode | No | Yes — `new LinkedHashMap<>(16, 0.75f, true)` |
+| LRU Cache | Cannot implement naturally | Extend + override `removeEldestEntry()` |
+| When to use | Order irrelevant | Preserve insertion order, LRU cache |
+
+---
+
+**HashMap vs TreeMap**
+
+| Feature | HashMap | TreeMap |
+|---|---|---|
+| Internal structure | Hash table (array + chains) | Red-Black Tree |
+| Order | No order | Sorted by key (natural / Comparator) |
+| `get/put/remove` | O(1) average | O(log n) |
+| Null key | 1 null allowed | No null key (`compareTo(null)` throws NPE) |
+| Null value | Yes | Yes |
+| Range queries | Not supported | `headMap`, `tailMap`, `subMap`, `floorKey`, `ceilingKey` |
+| When to use | Fast lookup, order irrelevant | Sorted keys, range queries, nearest-key queries |
+
+---
+
+**HashMap vs ConcurrentHashMap**
+
+| Feature | HashMap | ConcurrentHashMap |
+|---|---|---|
+| Thread-safe | No | Yes |
+| Null key | 1 null allowed | No null key |
+| Null value | Yes | No null value |
+| Locking (Java 8) | None | CAS for empty buckets, `synchronized` per bucket head |
+| Read lock | None needed | Lock-free (volatile reads) |
+| Write lock | None | Bucket-level only (not whole map) |
+| Iterator | Fail-fast | Fail-safe (weakly consistent) |
+| `size()` | Exact | Approximate (`mappingCount()` for better estimate) |
+| Why no null | n/a | Ambiguity: `get(k)==null` → key absent OR mapped to null? Dangerous under concurrency |
+| When to use | Single-threaded | Multi-threaded, high-concurrency |
+
+---
+
+**ConcurrentHashMap vs Hashtable vs SynchronizedMap**
+
+| Feature | ConcurrentHashMap | Hashtable | `Collections.synchronizedMap()` |
+|---|---|---|---|
+| Thread-safe | Yes | Yes | Yes |
+| Locking strategy | Bucket-level lock + CAS | Whole map lock | Whole map lock (wraps every method) |
+| Read concurrency | Lock-free | Blocked (lock held) | Blocked (lock held) |
+| Write concurrency | Multiple threads (different buckets) | One thread at a time | One thread at a time |
+| Iterator | Fail-safe | Fail-fast | Fail-fast |
+| Null key/value | No / No | No / No | Depends on wrapped map |
+| Performance | Highest | Lowest | Low |
+| Iteration safety | Safe without external sync | Must externally sync | Must externally sync |
+| When to use | Always, for concurrent maps | Never | Rarely — CHM is better |
+
+---
+
+**HashMap vs EnumMap**
+
+| Feature | HashMap | EnumMap |
+|---|---|---|
+| Key type | Any object | Enum only |
+| Internal structure | Hash table | Array indexed by `enum.ordinal()` |
+| `get/put` | O(1) with hashing | O(1) guaranteed — no hashing at all |
+| Null key | 1 null | No null key |
+| Memory | More — hash table overhead | Less — compact array |
+| Ordering | None | Enum declaration order |
+| When to use | General purpose | Whenever key is an enum — always faster |
+
+---
+
+**HashMap vs WeakHashMap vs IdentityHashMap**
+
+| Feature | HashMap | WeakHashMap | IdentityHashMap |
+|---|---|---|---|
+| Key reference | Strong reference | Weak reference | Strong reference |
+| GC behavior | Keys never GC'd while in map | Key GC'd when no other strong refs → entry auto-removed | Same as HashMap |
+| Key equality | `equals()` | `equals()` | `==` (reference equality) |
+| Key hashCode | `hashCode()` | `hashCode()` | `System.identityHashCode()` |
+| Null key | 1 null | 1 null | 1 null |
+| Use case | General purpose | Cache — auto-evict when key unreachable | Framework internals — track object identity, not equality |
+
+---
+
+## Synchronization Comparisons
+
+**synchronized method vs ConcurrentHashMap vs Collections.synchronizedMap()**
+
+| Feature | `synchronized` block/method | `ConcurrentHashMap` | `Collections.synchronizedMap()` |
+|---|---|---|---|
+| Scope of lock | Entire object / block | Single bucket | Entire map |
+| Read blocked | Yes (if method is sync) | No (lock-free reads) | Yes |
+| Write concurrency | One thread | Multiple threads (diff buckets) | One thread |
+| Compound operations atomic | Manual (you control the lock) | `putIfAbsent`, `compute`, `merge` | No (need external sync) |
+| Iteration safety | Manual sync needed | Fail-safe, no external sync | External sync needed |
+
+---
+
+## Comparable vs Comparator
+
+| Feature | `Comparable` | `Comparator` |
+|---|---|---|
+| Package | `java.lang` | `java.util` |
+| Method | `compareTo(T o)` | `compare(T o1, T o2)` |
+| Defined in | The class itself | Separate class / lambda |
+| Number of sort orders | One (natural ordering) | Many (different Comparators) |
+| Modifying class needed | Yes | No (can be external) |
+| Used by | `Collections.sort()`, `TreeSet`, `TreeMap` without arg | `Collections.sort(list, comp)`, `TreeSet(comp)` |
+| Null handling | No built-in | `Comparator.nullsFirst()` / `nullsLast()` |
+| Chaining | No | `thenComparing()` |
+| When to use | One natural order makes sense (String, Integer, Date) | Multiple orderings, class you don't own, runtime ordering |
+
+---
+
+## Iterator Comparisons
+
+**Iterator vs ListIterator vs Spliterator**
+
+| Feature | `Iterator` | `ListIterator` | `Spliterator` |
+|---|---|---|---|
+| Introduced | Java 1.2 | Java 1.2 | Java 8 |
+| Direction | Forward only | Forward + backward | Forward only |
+| Works on | Any `Collection` | `List` only | Any `Collection`, arrays |
+| `remove()` | Yes | Yes | No |
+| `add()` | No | Yes | No |
+| `set()` | No | Yes | No |
+| Index access | No | `nextIndex()`, `previousIndex()` | No |
+| Parallel support | No | No | Yes — `trySplit()` |
+| Used by | `for-each` loop internally | Bidirectional list traversal | Stream API internally |
+| Fail behavior | Fail-fast (most collections) | Fail-fast | Depends on source |
+
+---
+
+## Key Interview Decision Table
+
+```
+  REQUIREMENT                              USE THIS
+  ──────────────────────────────────────────────────────────────────────────
+  Fast list, mostly reads                  ArrayList
+  Frequent insert/delete at iterator pos   LinkedList
+  Thread-safe list, read-heavy             CopyOnWriteArrayList
+  Thread-safe list, write-heavy            Collections.synchronizedList()
+  Unique elements, no order needed         HashSet
+  Unique elements, insertion order         LinkedHashSet
+  Unique elements, always sorted           TreeSet
+  Fast map, no order needed                HashMap
+  Map with insertion order                 LinkedHashMap
+  Map always sorted by key                 TreeMap
+  Map with enum keys                       EnumMap
+  Thread-safe map                          ConcurrentHashMap
+  Cache with auto-eviction (GC-based)      WeakHashMap
+  LRU Cache                                LinkedHashMap (accessOrder=true)
+  FIFO Queue                               ArrayDeque
+  Priority-based Queue                     PriorityQueue
+  Thread-safe bounded Queue                ArrayBlockingQueue
+  Thread-safe unbounded Queue              LinkedBlockingQueue
+  Stack                                    ArrayDeque (NOT java.util.Stack)
+  Natural ordering in class                Comparable
+  Multiple / external orderings            Comparator
+  Thread-safe counter                      AtomicInteger (not collections)
+  Word frequency / grouping                HashMap + merge() or Streams groupingBy()
+```
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

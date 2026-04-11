@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's a complete deep-dive into how both work internally — step by step.
+
+---
+
+## HashMap Internal Working
+
+```
+  STRUCTURE (Java 8+):
+  ====================
+
+  HashMap internally is an array of Node objects called "table".
+
+  Node[] table  (default size = 16)
+  ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┐
+  │ 0  │ 1  │ 2  │ 3  │ 4  │ 5  │ 6  │ 7  │ 8  │ 9  │ 10 │ 11 │ 12 │ 13 │ 14 │ 15 │
+  └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
+    │                   │                             │
+    ▼                   ▼                             ▼
+  Node                Node --> Node               TreeNode
+  {hash,             (chain /                   (Red-Black
+   key,               collision)                  Tree when
+   value,                                        bucket > 8)
+   next}
+
+
+  EACH NODE:
+  ==========
+  class Node<K,V> {
+      final int    hash;      // cached hash of key
+      final K      key;
+            V      value;
+            Node   next;      // pointer to next node (chaining)
+  }
+```
+
+---
+
+## HashMap — PUT Operation Step by Step
+
+```
+  map.put("orderId", "ORD-001")
+         │
+         │ STEP 1: Compute hash of key
+         ▼
+  hash = key.hashCode()   -->  raw hash from key's hashCode() method
+
+  BUT Java applies a SPREAD function on top:
+  static final int hash(Object key) {
+      int h = key.hashCode();
+      return (h) ^ (h >>> 16);   // XOR upper 16 bits into lower 16 bits
+  }
+
+  WHY? hashCode() might have poor distribution in lower bits.
+  XOR with upper bits ensures better spread across small arrays.
+  Example:
+    hashCode()  = 1111 1111 1111 1111  0000 0000 0000 0001
+    h >>> 16    = 0000 0000 0000 0000  1111 1111 1111 1111
+    XOR result  = 1111 1111 1111 1111  1111 1111 1111 1110
+         │
+         │ STEP 2: Find bucket index
+         ▼
+  index = hash & (capacity - 1)
+        = hash & 15              (for default capacity 16)
+        = hash & 0000 1111       (bitmask -- last 4 bits)
+
+  WHY & instead of %?
+  capacity is always power of 2.
+  hash % 16 == hash & 15  (but & is faster, no division)
+         │
+         │ STEP 3: Check what is at table[index]
+         ▼
+  ┌──────────────────────────────────────────────────┐
+  │  table[index] == null?                           │
+  │       YES --> insert new Node directly           │
+  │        table[index] = new Node(hash, key, value) │
+  │                                                  │
+  │       NO  --> COLLISION                          │
+  │        traverse the chain at this bucket         │
+  │        for each existing node:                   │
+  │          same hash AND key.equals()?             │
+  │            YES --> UPDATE value                  │
+  │            NO  --> continue to next node         │
+  │        reached end with no match?                │
+  │            --> APPEND new Node at end            │
+  └──────────────────────────────────────────────────┘
+         │
+         │ STEP 4: Check treeification threshold
+         ▼
+  bucket chain length > TREEIFY_THRESHOLD (8)?
+       AND table.length >= MIN_TREEIFY_CAPACITY (64)?
+            YES --> convert linked list bucket to Red-Black Tree
+                    TreeNode replaces Node
+                    O(n) bucket lookup becomes O(log n)
+
+            table.length < 64?
+                 --> resize instead of treeify
+         │
+         │ STEP 5: Check resize threshold
+         ▼
+  size > capacity * loadFactor  (default: 16 * 0.75 = 12)?
+       YES --> RESIZE
+               new capacity = old capacity * 2  (always doubles)
+               new table array created
+               ALL entries rehashed and moved
+               O(n) operation -- expensive
+               modCount incremented --> fail-fast iterators detect this
+```
+
+---
+
+## HashMap — GET Operation Step by Step
+
+```
+  map.get("orderId")
+         │
+         │ STEP 1: Compute hash (same formula as put)
+         ▼
+  hash  = hash("orderId")
+  index = hash & (capacity - 1)
+         │
+         │ STEP 2: Go to table[index]
+         ▼
+  table[index] == null?
+       YES --> return null  (key not present)
+
+       NO  --> check first node:
+               hash matches AND (key == node.key OR key.equals(node.key))?
+                    YES --> return node.value
+                    NO  --> is it a TreeNode?
+                                YES --> search Red-Black Tree  O(log n)
+                                NO  --> traverse linked list   O(n worst)
+         │
+         │ STEP 3: Return value or null
+         ▼
+  found  --> return value
+  not found --> return null
+
+
+  WHY key == node.key check before equals()?
+  == is a reference check -- O(1), very fast.
+  If same object reference, no need to call equals() at all.
+  equals() might be expensive (deep comparison).
+  This is a performance optimization.
+```
+
+---
+
+## HashMap — Thread Safety Problem
+
+```
+  SCENARIO: Two threads putting into same HashMap concurrently
+
+  Thread-1                          Thread-2
+  ────────────────────────────────────────────────────────
+  put("A", 1)                       put("B", 2)
+  hash("A") --> index 5             hash("B") --> index 5  (same bucket!)
+  reads table[5] --> null           reads table[5] --> null
+  [context switch]
+                                    creates Node{B,2}, sets table[5]
+  [resumes]
+  creates Node{A,1}, sets table[5]  <-- OVERWRITES B!
+
+  RESULT: Entry "B" is LOST silently. No exception, no warning.
+
+
+  RESIZE RACE CONDITION (Java 7 -- famous infinite loop bug):
+  ============================================================
+  Thread-1 and Thread-2 both trigger resize simultaneously.
+  Both create new arrays, both start rehashing.
+  Linked list nodes can form a CYCLE during concurrent rehash.
+  Next time get() traverses the bucket: infinite loop.
+  Thread hangs forever -- CPU at 100%.
+
+  Java 8 fixed the cycle bug (different resize algorithm)
+  but HashMap is still NOT thread-safe -- data loss still possible.
+
+
+  SOLUTIONS:
+  ==========
+  1. Collections.synchronizedMap(new HashMap<>())
+     --> locks entire map on every operation
+     --> one thread at a time -- poor concurrency
+
+  2. ConcurrentHashMap
+     --> fine-grained locking
+     --> multiple threads operate simultaneously
+     --> production choice
+```
+
+---
+
+## ConcurrentHashMap Internal Working
+
+```
+  JAVA 7 STRUCTURE (Segment-based):
+  ===================================
+
+  ConcurrentHashMap
+  │
+  ├── Segment[0]  (ReentrantLock)
+  │     └── HashEntry[] table
+  │           ├── HashEntry --> HashEntry (chain)
+  │           └── HashEntry
+  │
+  ├── Segment[1]  (ReentrantLock)
+  │     └── HashEntry[] table
+  │
+  ├── Segment[2]  (ReentrantLock)
+  │
+  ... (default 16 segments)
+
+  Each Segment is like a mini-HashMap with its own lock.
+  16 threads can write to 16 different segments SIMULTANEOUSLY.
+  concurrencyLevel = 16 (default) = max parallel writers.
+
+  PROBLEM with Java 7:
+  - Segment lock held for entire operation (even reads sometimes)
+  - Fixed number of segments limits scalability
+  - Memory overhead of Segment objects
+
+
+  JAVA 8 STRUCTURE (Node-level locking + CAS):
+  =============================================
+
+  ConcurrentHashMap
+  │
+  └── Node[] table  (volatile, same concept as HashMap)
+        ├── [0]  null
+        ├── [1]  Node{A,1} --> Node{X,10}    (chain)
+        ├── [2]  null
+        ├── [3]  ForwardingNode               (during resize)
+        ├── [4]  TreeBin                      (Red-Black Tree wrapper)
+        ...
+        └── [15] Node{B,2}
+
+  KEY DIFFERENCE FROM JAVA 7:
+  - No Segment objects
+  - Lock is on INDIVIDUAL BUCKET HEAD (first node of each bucket)
+  - Empty buckets: CAS operation (NO lock at all)
+  - Non-empty buckets: synchronized on that bucket's head node only
+  - Reads: COMPLETELY LOCK-FREE (volatile reads)
+
+
+  NEW NODE TYPES (Java 8):
+  ========================
+  Node<K,V>        -- regular linked list node (same as HashMap)
+  TreeNode<K,V>    -- node in Red-Black Tree
+  TreeBin<K,V>     -- wrapper holding root of Red-Black Tree + read/write lock
+  ForwardingNode   -- placeholder during resize (has nextTable reference)
+  ReservationNode  -- placeholder during computeIfAbsent
+```
+
+---
+
+## ConcurrentHashMap — PUT Operation Step by Step
+
+```
+  map.put("orderId", "ORD-001")
+         │
+         │ STEP 1: Compute hash (same spread function as HashMap)
+         ▼
+  hash = spread(key.hashCode())
+  // One extra thing: ensure hash is always positive
+  // HASH_BITS = 0x7fffffff
+  // hash = (h ^ (h >>> 16)) & HASH_BITS
+  // Negative hash values are reserved for special nodes
+  // (ForwardingNode = -1, TreeBin = -2, ReservationNode = -3)
+         │
+         │ STEP 2: Loop until insertion succeeds (CAS retry loop)
+         ▼
+  for (;;) {                    // spin until success
+      Node[] tab = table;
+         │
+         │ STEP 3: Is table initialized?
+         ▼
+      tab == null?
+           YES --> initTable()  (CAS to initialize, only ONE thread does it)
+                  others spin waiting
+         │
+         │ STEP 4: Find bucket
+         ▼
+      index = hash & (tab.length - 1)
+      f = tabAt(tab, index)      // VOLATILE READ of table[index]
+                                 // sees latest value across all threads
+         │
+         │ STEP 5: What is at this bucket?
+         ▼
+  ┌────────────────────────────────────────────────────────────────┐
+  │                                                                │
+  │  f == null  (bucket is EMPTY)                                  │
+  │       --> CAS to insert new Node (NO LOCK!)                    │
+  │           casTabAt(tab, index, null, new Node(hash,key,value)) │
+  │           CAS succeeds? --> done, break loop                   │
+  │           CAS fails?    --> another thread beat us             │
+  │                             loop again (retry)                 │
+  │                                                                │
+  │  f.hash == MOVED (-1)  (ForwardingNode -- resize in progress)  │
+  │       --> helpTransfer(tab, f)                                 │
+  │           THIS THREAD HELPS with the resize                    │
+  │           then loops again with new table                      │
+  │                                                                │
+  │  f is regular Node or TreeBin (bucket NOT empty)              │
+  │       --> synchronized(f) {    LOCK on bucket head only       │
+  │               verify f is still head (double-check)           │
+  │               if f.hash >= 0 (linked list):                   │
+  │                   traverse chain:                              │
+  │                     same key? --> UPDATE value                 │
+  │                     end of chain? --> APPEND new Node          │
+  │               if f is TreeBin:                                 │
+  │                   putTreeVal() --> insert into Red-Black Tree  │
+  │           }   UNLOCK                                           │
+  │                                                                │
+  └────────────────────────────────────────────────────────────────┘
+         │
+         │ STEP 6: Check treeification (same threshold as HashMap)
+         ▼
+  bucket size > 8?
+       YES --> treeifyBin()
+               if table.length < 64 --> resize first
+               else --> convert to TreeBin (Red-Black Tree)
+         │
+         │ STEP 7: Update size (no simple size field!)
+         ▼
+  addCount(1L, binCount)
+  // ConcurrentHashMap uses a distributed counter:
+  // baseCount (volatile long) + CounterCell[] array
+  // Each thread tries to CAS baseCount first
+  // If contention --> use a CounterCell (thread-local-ish cell)
+  // sum() = baseCount + sum of all CounterCells
+  // This is exactly LongAdder pattern -- minimizes CAS contention on size
+```
+
+---
+
+## ConcurrentHashMap — GET Operation Step by Step
+
+```
+  map.get("orderId")
+         │
+         │ STEP 1: Compute hash
+         ▼
+  hash = spread(key.hashCode())
+         │
+         │ STEP 2: Volatile read of table
+         ▼
+  tab = table   (volatile read -- always sees latest table reference)
+         │
+         │ STEP 3: Read bucket head
+         ▼
+  n = tab.length
+  index = (n-1) & hash
+  e = tabAt(tab, index)   // VOLATILE READ -- NO LOCK
+                          // guaranteed to see latest write
+         │
+         │ STEP 4: Traverse
+         ▼
+  e == null?
+       YES --> return null
+
+  e.hash == hash AND e.key.equals(key)?
+       YES --> return e.value   // found at head
+
+  e.hash < 0?  (special node)
+       YES --> e.find(hash, key)
+               ForwardingNode: search in nextTable (new resized table)
+               TreeBin: search Red-Black Tree with read lock
+
+  e = e.next  --> traverse linked list
+  loop until found or null
+
+
+  KEY POINT: GET IS COMPLETELY LOCK-FREE
+  =======================================
+  No synchronized block anywhere in get().
+  Uses volatile reads (tabAt uses Unsafe.getObjectVolatile).
+  Volatile guarantees: writer's changes visible to reader immediately.
+  Reader always sees the most recently written value.
+
+  This is why ConcurrentHashMap reads are so fast --
+  multiple threads can read simultaneously with zero blocking.
+```
+
+---
+
+## ConcurrentHashMap — RESIZE Operation Step by Step
+
+```
+  RESIZE IS COOPERATIVE (unique to ConcurrentHashMap):
+  =====================================================
+
+  Thread-1 triggers resize (size > capacity * 0.75):
+         │
+         │ STEP 1: Create new table (double size)
+         ▼
+  nextTable = new Node[oldCapacity * 2]
+         │
+         │ STEP 2: Transfer buckets (divide work among threads)
+         ▼
+  transferIndex  = oldCapacity   // starts from end, goes to 0
+  stride = max(16, oldCapacity / (8 * NCPU))
+           // each thread gets a "stride" of buckets to transfer
+
+  Thread-1 claims buckets [48..64] and starts transferring them.
+
+  Thread-2 comes in with a put() and sees ForwardingNode:
+       --> helpTransfer() called
+       --> Thread-2 claims buckets [32..48] and transfers them too!
+
+  Thread-3, Thread-4 similarly join and claim their ranges.
+
+  Each thread:
+       1. Locks the source bucket: synchronized(f)
+       2. Splits bucket into "low" and "high" halves
+          (elegant trick: bit at position oldCapacity is 0 or 1)
+       3. Puts them into nextTable[i] and nextTable[i + oldCapacity]
+       4. Puts ForwardingNode in old table[i]
+          (signals other threads: moved, look in nextTable)
+       5. Releases lock, moves to next bucket in its range
+
+  When all buckets transferred:
+       table = nextTable  (volatile write -- atomic reference swap)
+       nextTable = null
+       sizeCtl = new threshold
+
+
+  WHY THIS IS BRILLIANT:
+  =======================
+  Old HashMap resize: ONE thread does ALL the work, BLOCKS everyone.
+  ConcurrentHashMap resize: MULTIPLE threads share the work.
+  put() threads that arrive during resize HELP with transfer
+  instead of waiting. No thread ever blocked for long.
+```
+
+---
+
+## Side-by-Side Comparison — Every Internal Difference
+
+```
+  ASPECT              HashMap                    ConcurrentHashMap
+  ─────────────────────────────────────────────────────────────────────────────
+
+  BASE STRUCTURE      Node[] table               volatile Node[] table
+                      (no volatile)              (volatile ensures visibility)
+
+  THREAD SAFETY       None                       Yes -- multiple strategies
+
+  EMPTY BUCKET PUT    Direct assignment           CAS (Compare-And-Swap)
+                      table[i] = newNode          no lock, retry on failure
+
+  NON-EMPTY BUCKET    No lock                     synchronized(bucketHead)
+  PUT                 direct manipulation         only locks that one bucket
+
+  GET                 No lock (not volatile)      No lock (volatile reads)
+                      may see stale data in MT    always sees fresh data
+
+  HASH FUNCTION       (h) ^ (h >>> 16)            (h) ^ (h >>> 16) & HASH_BITS
+                                                  ensures positive hash
+                                                  (negative reserved for
+                                                   special nodes)
+
+  SIZE TRACKING       int size field              baseCount + CounterCell[]
+                      (simple int)               (distributed LongAdder-style)
+                                                  avoids contention on size++
+
+  RESIZE TRIGGER      size > capacity * 0.75      size > capacity * 0.75
+                                                  (sizeCtl field controls this)
+
+  RESIZE EXECUTION    Single thread               COOPERATIVE -- multiple
+                      blocks all puts             threads transfer buckets
+                      during resize               in parallel
+
+  RESIZE SIGNAL       None (just replace table)   ForwardingNode placed in
+                      readers may see old table   old buckets -- tells readers
+                                                  to look in nextTable
+
+  NULL KEY            1 null key allowed          NO null key
+                                                  (ambiguity in concurrent get)
+
+  NULL VALUE          Multiple null values        NO null value
+                      allowed                     (same ambiguity reason)
+
+  ITERATION           Fail-fast                   Weakly consistent
+                      ConcurrentModification      (fail-safe)
+                      Exception if modified       No exception, may miss
+                      during iteration            recent changes
+
+  modCount            Yes -- incremented on        No modCount
+                      structural change           (no fail-fast needed)
+
+  TREEIFICATION       Same: > 8 nodes             Same: > 8 nodes
+  THRESHOLD           per bucket                  per bucket
+                                                  TreeBin wraps tree
+                                                  with its own read/write lock
+
+  SPECIAL NODES       None                        ForwardingNode (resize)
+                                                  TreeBin (tree wrapper)
+                                                  ReservationNode (compute)
+
+  COMPUTE METHODS     Not atomic                  compute(), computeIfAbsent(),
+                      (check-then-act race)       computeIfPresent(), merge()
+                                                  ALL atomic
+
+  CONCURRENT READERS  Unlimited but may           Unlimited -- lock-free
+                      see inconsistent state      volatile guarantees
+
+  CONCURRENT WRITERS  Data corruption             Multiple writers OK
+                      possible                    as long as different buckets
+
+  DEFAULT CAPACITY    16                          16
+
+  LOAD FACTOR         0.75                        0.75
+
+  PERFORMANCE         Fastest single-thread       Best multi-thread
+  SWEET SPOT          no overhead                 near-linear scaling
+```
+
+---
+
+## Volatile + CAS — The Two Pillars
+
+```
+  VOLATILE -- guarantees VISIBILITY:
+  ===================================
+  Without volatile:
+    Thread-1 writes table[5] = newNode
+    Thread-2 reads table[5]  --> may read STALE cached value (CPU cache)
+
+  With volatile:
+    Thread-1 writes table[5] = newNode  --> flushed to main memory immediately
+    Thread-2 reads table[5]  --> always reads from main memory (fresh)
+
+  ConcurrentHashMap uses:
+    volatile Node<K,V>[] table          // table reference itself
+    tabAt() = Unsafe.getObjectVolatile  // volatile read of individual bucket
+    setTabAt() = Unsafe.putObjectVolatile // volatile write of individual bucket
+
+
+  CAS (Compare-And-Swap) -- guarantees ATOMICITY without lock:
+  =============================================================
+  CAS(location, expectedValue, newValue):
+    if (location == expectedValue)   // compare
+         location = newValue         // swap
+         return true                 // success
+    else
+         return false                // someone else changed it, retry
+
+  casTabAt(tab, index, null, newNode):
+    if (tab[index] == null)          // expected: still empty
+         tab[index] = newNode        // swap: insert
+         return true
+    else
+         return false                // another thread inserted, retry loop
+
+  WHY CAS IS POWERFUL:
+  CPU instruction (CMPXCHG on x86) -- atomic at hardware level.
+  No OS-level lock. No thread suspension. No context switch.
+  Failing thread just retries -- "optimistic locking" / lock-free.
+  Much faster than synchronized for low-contention scenarios.
+
+
+  WHERE EACH IS USED IN ConcurrentHashMap:
+  ==========================================
+  volatile read    --> get() -- always fresh data, no lock
+  CAS              --> put() on empty bucket -- no lock, retry on fail
+  synchronized     --> put() on non-empty bucket -- needed when
+                       multiple nodes in chain (can't CAS a list)
+  volatile write   --> table = nextTable after resize
+```
+
+---
+
+## Why ConcurrentHashMap Forbids Null
+
+```
+  PROBLEM WITH NULL IN CONCURRENT CONTEXT:
+  =========================================
+
+  HashMap allows null:
+    map.put("key", null);
+    map.get("key")  --> null
+    map.get("missing")  --> null
+    // In single-thread: use containsKey() to disambiguate. Fine.
+
+  ConcurrentHashMap -- this becomes DANGEROUS:
+
+  Thread-1:
+    if (!map.containsKey("key")) {   // Line A: key not present
+  [context switch]
+  Thread-2:
+    map.remove("key");               // removes the key
+  [Thread-1 resumes]
+        map.put("key", compute());   // Line B: adds key
+    }
+
+  Even in single-thread HashMap with null values:
+    result = map.get("key");
+    if (result == null) {
+        // Was it null value or missing key?
+        // Must call containsKey() separately
+        // In concurrent: containsKey() + get() is NOT atomic
+        // State can change between the two calls
+    }
+
+  Doug Lea (author of ConcurrentHashMap) said:
+  "The main reason null isn't allowed in ConcurrentHashMap is that
+   it cannot be distinguished from a missing key in concurrent code,
+   and ambiguity breeds bugs."
+
+  SOLUTION: Use Optional<V> as value type if you need nullable values:
+    ConcurrentHashMap<String, Optional<Order>> map = new ConcurrentHashMap<>();
+    map.put("key", Optional.ofNullable(order));
+    Optional<Order> result = map.getOrDefault("key", Optional.empty());
+```
+
+---
+
+## Atomic Compound Operations
+
+```java
+// These are the MAIN REASON to use ConcurrentHashMap over
+// synchronized HashMap. They perform check + act ATOMICALLY.
+
+
+// putIfAbsent -- atomic "insert only if absent"
+// WRONG (not atomic):
+if (!map.containsKey("key")) {     // check
+    map.put("key", value);         // act
+}                                  // another thread can insert between these two lines
+
+// RIGHT (atomic):
+map.putIfAbsent("key", value);     // check + act in one atomic operation
+
+
+// computeIfAbsent -- compute and insert if absent (lazy initialization)
+// Classic use: building a map of lists
+map.computeIfAbsent("orders", k -> new CopyOnWriteArrayList<>())
+   .add(newOrder);
+// If "orders" key absent: creates list, inserts it, returns it, adds to it
+// If "orders" key present: returns existing list, adds to it
+// ENTIRE operation is atomic -- safe under concurrency
+
+
+// compute -- always compute new value
+map.compute("count", (k, v) -> v == null ? 1 : v + 1);
+// Atomic increment -- no need for AtomicInteger in a map
+
+
+// merge -- combine old and new value
+map.merge("total", amount, Double::sum);
+// if "total" absent: put amount
+// if "total" present: apply Double::sum(oldValue, amount)
+// Perfect for accumulating values concurrently
+
+
+// INTERNAL MECHANISM of compute/computeIfAbsent:
+// 1. Find or create the bucket
+// 2. Lock the bucket (synchronized on head node)
+// 3. Execute the function
+// 4. Update or insert result
+// 5. Unlock
+// Function executes INSIDE the lock -- atomic from perspective of other threads
+// WARNING: Keep function fast -- lock held during execution
+// WARNING: Never call other map methods inside function -- deadlock risk
+```
+
+---
+
+## Interview Tricky Q&A
+
+```
+  Q: "How does ConcurrentHashMap achieve thread safety without locking the whole map?"
+  A: Three-layer approach:
+     1. Volatile reads: get() reads volatile table -- no lock, always fresh.
+     2. CAS: put() on empty bucket uses hardware Compare-And-Swap -- no lock.
+     3. Bucket-level synchronized: put() on non-empty bucket locks only
+        that one bucket's head node -- other buckets unaffected.
+     Result: reads never block, writes only block same-bucket writers.
+
+
+  Q: "Can two threads write to ConcurrentHashMap at the same time?"
+  A: YES -- if they hash to different buckets.
+     Thread-1 puts key "A" (hashes to bucket 3): locks bucket 3.
+     Thread-2 puts key "B" (hashes to bucket 7): locks bucket 7.
+     Both locks acquired simultaneously -- fully parallel.
+     Only same-bucket writes serialize.
+
+
+  Q: "Is ConcurrentHashMap fully consistent?"
+  A: Reads: weakly consistent. A read concurrent with a write may see
+     the old or new value -- not guaranteed to see the absolute latest.
+     This is by design for performance.
+     Writes to same bucket: strongly consistent (synchronized).
+     Atomic operations (compute, merge, putIfAbsent): strongly consistent.
+
+
+  Q: "What is the difference between size() and mappingCount()?"
+  A: Both return approximate counts during concurrent modification.
+     size() returns int -- can overflow for maps > Integer.MAX_VALUE.
+     mappingCount() returns long -- accurate for large maps.
+     Neither is guaranteed exact if map is being modified concurrently.
+     ConcurrentHashMap uses distributed counter (baseCount + CounterCells)
+     -- sum of all cells is approximate under heavy concurrent modification.
+
+
+  Q: "What is a ForwardingNode?"
+  A: A special node placed in old table buckets during resize.
+     hash = MOVED = -1  (negative hash = special node).
+     Contains reference to nextTable (new resized table).
+     When a thread encounters ForwardingNode during get():
+       --> follows reference to search in nextTable.
+     When a thread encounters ForwardingNode during put():
+       --> helps with resize (helpTransfer) then retries.
+     Signals: "this bucket has been moved, look in new table."
+
+
+  Q: "Why does ConcurrentHashMap help with resize instead of waiting?"
+  A: Performance. In HashMap, resize blocks all writers.
+     In ConcurrentHashMap, threads that arrive during resize
+     each claim a stripe of buckets and transfer them cooperatively.
+     Resize completes faster, no thread waits idle.
+     This is called "cooperative resize" or "incremental transfer."
+
+
+  Q: "HashMap vs ConcurrentHashMap -- which is faster for single-threaded use?"
+  A: HashMap. ConcurrentHashMap has overhead:
+     volatile reads/writes (memory barriers), CAS retries,
+     distributed size counter. All unnecessary in single-thread.
+     HashMap has none of this -- raw array access.
+     Only use ConcurrentHashMap when you actually have multiple threads.
+
+
+  Q: "What happens if you call compute() with a slow function?"
+  A: The bucket is locked (synchronized on head node) for the
+     entire duration of the function execution.
+     Other threads trying to access the SAME BUCKET are blocked.
+     Threads accessing OTHER buckets are unaffected.
+     Keep compute functions fast and non-blocking.
+     Never call blocking I/O or other map operations inside compute().
+```
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

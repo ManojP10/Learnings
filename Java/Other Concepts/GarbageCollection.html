@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's a complete deep-dive into Java Garbage Collection — everything from basics to interview depth.
+
+---
+
+## Big Picture — Memory Layout
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                          JVM MEMORY STRUCTURE                                     |
+  +-----------------------------------------------------------------------------------+
+
+  +─────────────────────────────────────────────────────────────────────────────────+
+  │                              JVM MEMORY                                          │
+  │                                                                                  │
+  │  ┌─────────────────────────────────────────────────────┐  ┌──────────────────┐  │
+  │  │                     HEAP                            │  │   NON-HEAP       │  │
+  │  │                                                     │  │                  │  │
+  │  │  ┌──────────────────┐  ┌───────────────────────┐   │  │  Metaspace       │  │
+  │  │  │   YOUNG GEN      │  │      OLD GEN           │   │  │  (class meta)    │  │
+  │  │  │                  │  │                        │   │  │                  │  │
+  │  │  │  ┌────┐ ┌──┐ ┌──┐│  │  Long-lived objects   │   │  │  Code Cache      │  │
+  │  │  │  │Eden│ │S0│ │S1││  │  Survived many GCs    │   │  │  (JIT compiled)  │  │
+  │  │  │  │    │ │  │ │  ││  │                        │   │  │                  │  │
+  │  │  │  └────┘ └──┘ └──┘│  │                        │   │  │  Thread stacks   │  │
+  │  │  │  Eden:  80%      │  │                        │   │  │                  │  │
+  │  │  │  S0,S1: 10% each │  │                        │   │  │  Native memory   │  │
+  │  │  └──────────────────┘  └───────────────────────┘   │  └──────────────────┘  │
+  │  │                                                     │                        │
+  │  └─────────────────────────────────────────────────────┘                        │
+  └─────────────────────────────────────────────────────────────────────────────────+
+
+  YOUNG GEN:  Where ALL new objects are born (Eden)
+  OLD GEN:    Where long-lived objects eventually move
+  METASPACE:  Class metadata (replaced PermGen in Java 8)
+  Code Cache: JIT-compiled native code
+  Stack:      Each thread has its own stack (method frames, local vars)
+
+
+  OBJECT LIFECYCLE:
+  =================
+
+  new Order()
+       │
+       ▼
+  ┌─────────┐   Eden full   ┌─────────┐  survived   ┌─────────┐  survived    ┌─────────┐
+  │  Eden   │ ─────────────>│Minor GC │ ─ 15 GCs ──>│  S0/S1  │ ────────────>│ Old Gen │
+  │ (birth) │               │ fires   │             │(survive)│              │(tenure) │
+  └─────────┘               └─────────┘             └─────────┘              └─────────┘
+                                  │
+                                  ▼
+                            Dead objects
+                            collected here
+                            (most objects
+                             die young)
+```
+
+---
+
+## How GC Works — Core Concepts
+
+```
+  TWO FUNDAMENTAL QUESTIONS GC ANSWERS:
+  =======================================
+  1. Which objects are ALIVE?   (Reachability analysis)
+  2. What to do with DEAD ones? (Collection algorithms)
+
+
+  REACHABILITY — GC ROOTS:
+  =========================
+  An object is ALIVE if it is reachable from a GC Root.
+  An object is DEAD if NO path from any GC Root leads to it.
+
+  GC ROOTS are:
+  ┌──────────────────────────────────────────────────────────┐
+  │  1. Local variables on thread stacks                     │
+  │  2. Static variables of loaded classes                   │
+  │  3. Active Java threads themselves                       │
+  │  4. JNI references (native code holding Java objects)    │
+  │  5. Synchronized monitor objects                         │
+  │  6. JVM internal references (system class loader etc.)   │
+  └──────────────────────────────────────────────────────────┘
+
+  EXAMPLE:
+  ========
+  OrderService orderService = new OrderService();   // GC root (static/stack)
+       │
+       └──> Order order = new Order();              // reachable -- ALIVE
+                 │
+                 └──> Customer c = new Customer();  // reachable -- ALIVE
+
+  OrderService orderService = null;   // root reference removed
+       // orderService, order, customer all UNREACHABLE
+       // eligible for GC (if no other references)
+
+
+  MARK AND SWEEP (fundamental algorithm):
+  ========================================
+
+  PHASE 1: MARK
+  Start from GC roots, traverse all reachable objects, mark them ALIVE.
+
+  GC Root ──> [A] ──> [B] ──> [C]    (marked: A, B, C)
+                  └──> [D]            (marked: D)
+              [E]  [F]  [G]           (NOT reachable -- garbage)
+
+  PHASE 2: SWEEP
+  Scan entire heap. Anything NOT marked = garbage, reclaim memory.
+
+  Before: [A][E][B][F][C][G][D]
+  After:  [A][  ][B][  ][C][  ][D]   (gaps where E, F, G were)
+
+  PROBLEM: Memory fragmentation -- lots of small gaps.
+
+  PHASE 3: COMPACT (optional -- depends on GC)
+  Move live objects together, eliminate gaps.
+  After:  [A][B][C][D][      free      ]
+  Cost:   Must update ALL references to moved objects (expensive).
+
+
+  GENERATIONAL HYPOTHESIS:
+  ========================
+  "Most objects die young."
+
+  Evidence:
+  - Temporary variables: created, used, discarded within method
+  - String concatenation temps, iterator objects, builder objects
+  - Only ~2-5% of objects survive to Old Gen
+
+  WHY GENERATIONS HELP:
+  - Don't scan entire heap every GC -- too expensive
+  - Scan only Young Gen (small, fast) -- Minor GC
+  - Scan Young + Old (large, slow) -- Major/Full GC (rare)
+  - 90%+ of garbage collected in Minor GC (fast, frequent)
+```
+
+---
+
+## Minor GC — How Young Gen Collection Works
+
+```
+  YOUNG GEN STRUCTURE:
+  ====================
+  Eden  ──── where new objects are born
+  S0    ──── Survivor space 0 (from-space)
+  S1    ──── Survivor space 1 (to-space)
+
+  One of S0/S1 is always EMPTY (to-space).
+  They swap roles each GC cycle.
+
+
+  STEP-BY-STEP MINOR GC:
+  =======================
+
+  INITIAL STATE:
+  Eden: [A][B][C][D][E][F][G]  (full)
+  S0:   [X][Y]                 (survived previous GC, age=1)
+  S1:   [empty]                (to-space)
+  Old:  [Z]                    (long-lived)
+
+
+  STEP 1: Eden fills up --> Minor GC triggered
+
+  STEP 2: Mark all LIVE objects in Eden + S0 (from-space)
+          Assume: A, C, E alive in Eden. X alive in S0. B,D,F,G,Y dead.
+
+  STEP 3: COPY live objects from Eden + S0 --> S1 (to-space)
+          Increment age of each copied object.
+          A (age 1), C (age 1), E (age 1) copied from Eden to S1
+          X (age 2) copied from S0 to S1
+
+  S1:   [A,age=1][C,age=1][E,age=1][X,age=2]
+
+  STEP 4: CLEAR Eden and S0 entirely (just reset pointer -- O(1))
+  Eden: [empty -- pointer reset to start]
+  S0:   [empty]
+
+  STEP 5: SWAP S0 and S1 roles
+  Now S1 is "from-space", S0 is "to-space" (empty)
+
+  STEP 6: Check ages -- any object reaching MaxTenuringThreshold (default 15)?
+          X has age=2, not yet. No promotion this cycle.
+
+
+  NEXT CYCLE (after more allocations):
+  ... eventually X reaches age 15:
+  X (age=15) --> PROMOTE to Old Gen (Tenuring)
+
+  ALSO: If S1 is too small to hold all live objects from Eden+S0
+        --> some objects promoted to Old Gen early (regardless of age)
+        This is called "premature promotion" or "promotion failure"
+
+
+  WHY COPY ALGORITHM?
+  ====================
+  No fragmentation -- all live objects compacted in S1.
+  Fast allocation -- just bump a pointer (no need to find free slot).
+  Fast collection -- only process live objects (dead = ignored, space reclaimed).
+  Cost: 50% of Survivor space always wasted (one always empty).
+  Acceptable because Survivor spaces are small (10% each of Young Gen).
+```
+
+---
+
+## Major GC and Full GC
+
+```
+  MAJOR GC:
+  ==========
+  Collects Old Generation.
+  Triggered when Old Gen fills up.
+  Uses Mark-Sweep-Compact (not copy -- Old Gen too large for copy).
+  STOP-THE-WORLD pause -- all app threads stopped.
+  Much slower than Minor GC (larger region, more objects, compaction).
+
+  FULL GC:
+  =========
+  Collects ENTIRE heap: Young + Old + Metaspace.
+  Triggered by:
+    - System.gc() call (hint, not guaranteed)
+    - Metaspace exhaustion
+    - Concurrent GC failure (CMS/G1 couldn't keep up)
+    - Explicit request from monitoring tools
+  LONGEST pause of all GC types.
+  Production goal: minimize Full GC frequency.
+
+
+  STOP-THE-WORLD (STW):
+  =====================
+  During STW pause: ALL application threads FROZEN.
+  GC runs exclusively.
+  User requests timeout, latency spikes.
+
+  WHY NEEDED?
+  Moving objects requires updating ALL references to them.
+  If app threads run during move, they might use stale reference.
+  STW ensures consistent heap snapshot.
+
+  MODERN GCs (G1, ZGC, Shenandoah) minimize STW by doing
+  most work CONCURRENTLY while app threads run.
+
+
+  PROMOTION FAILURE:
+  ==================
+  Minor GC tries to promote objects to Old Gen.
+  Old Gen has no space.
+  --> Full GC triggered immediately.
+  --> If still no space after Full GC --> OutOfMemoryError.
+```
+
+---
+
+## All Garbage Collectors — History and Working
+
+```
+  +──────────────────────────────────────────────────────────────────────────────+
+  │                    GC EVOLUTION IN JAVA                                       │
+  │                                                                               │
+  │  Java 1    Serial GC                                                          │
+  │  Java 1.4  Parallel GC                                                        │
+  │  Java 1.4  CMS (Concurrent Mark Sweep)                                        │
+  │  Java 7    G1GC (Garbage First) -- experimental                               │
+  │  Java 8    G1GC available, PermGen removed                                    │
+  │  Java 9    G1GC default                                                       │
+  │  Java 11   ZGC experimental, Epsilon GC                                       │
+  │  Java 12   Shenandoah (Red Hat) experimental                                  │
+  │  Java 15   ZGC production, Shenandoah production                              │
+  │  Java 21   Generational ZGC                                                   │
+  +──────────────────────────────────────────────────────────────────────────────+
+```
+
+---
+
+### 1. Serial GC
+
+```
+  Enable: -XX:+UseSerialGC
+
+  YOUNG GEN: Serial copy algorithm (single thread)
+  OLD GEN:   Serial Mark-Sweep-Compact (single thread)
+
+  ┌─────────────────────────────────────────────┐
+  │  App threads  │▓▓▓▓▓▓▓▓▓▓▓▓│ App threads    │
+  │  GC thread    │            │ GC thread       │
+  │               │<-- STW --->│                 │
+  └─────────────────────────────────────────────┘
+
+  HOW: Single GC thread. Stops all app threads. Collects. Resumes.
+
+  PROS:  Simple. No GC thread coordination overhead.
+         Low memory footprint (~1MB GC overhead).
+  CONS:  Long STW pauses. Single-threaded = slow on multi-CPU.
+  USE:   Single-CPU machines, small heap (< 100MB), client apps.
+         Embedded systems, microcontainer apps with tiny heap.
+  NEVER: Production servers, multi-core machines.
+```
+
+---
+
+### 2. Parallel GC (Throughput Collector)
+
+```
+  Enable: -XX:+UseParallelGC  (Java 8 default)
+  Threads: -XX:ParallelGCThreads=N (default = CPU cores)
+
+  YOUNG GEN: Parallel copy algorithm (multiple GC threads)
+  OLD GEN:   Parallel Mark-Sweep-Compact
+
+  ┌──────────────────────────────────────────────────────┐
+  │  App threads  │▓▓▓▓▓▓│ App threads  │▓▓▓▓▓▓│        │
+  │  GC thread 1  │      │ GC-T1        │      │        │
+  │  GC thread 2  │      │ GC-T2        │      │        │
+  │  GC thread 3  │      │ GC-T3        │      │        │
+  │  GC thread 4  │      │ GC-T4        │      │        │
+  │               │<STW->│              │<STW->│        │
+  └──────────────────────────────────────────────────────┘
+
+  HOW: Multiple GC threads run in parallel during STW pause.
+       Pause shorter than Serial (more threads = faster collection).
+       Goal: maximize THROUGHPUT (total work done / total time).
+
+  PROS:  High throughput. Good for batch processing.
+         Shorter STW than Serial on multi-core.
+  CONS:  Still STW during collection. No concurrent collection.
+         Pauses can be seconds for large heaps.
+  USE:   Batch jobs, data processing, scientific computing.
+         Systems where throughput > latency.
+
+  KEY FLAGS:
+  -XX:MaxGCPauseMillis=200     (target pause time -- best effort)
+  -XX:GCTimeRatio=99           (99% app time, 1% GC time -- throughput goal)
+  -XX:+UseAdaptiveSizePolicy   (auto-tune Eden/Survivor sizes)
+```
+
+---
+
+### 3. CMS — Concurrent Mark Sweep
+
+```
+  Enable: -XX:+UseConcMarkSweepGC  (deprecated Java 9, removed Java 14)
+
+  YOUNG GEN: Parallel copy (same as Parallel GC)
+  OLD GEN:   Concurrent Mark-Sweep (runs WITH app threads)
+
+  PHASES:
+  ┌────────────────────────────────────────────────────────────────────┐
+  │                                                                    │
+  │  Phase 1: Initial Mark     (STW -- very short)                     │
+  │           Mark objects directly reachable from GC roots only.      │
+  │                                                                    │
+  │  Phase 2: Concurrent Mark  (CONCURRENT -- long)                    │
+  │           Traverse entire object graph from initial marks.         │
+  │           App threads run simultaneously.                          │
+  │           App may create new objects (floating garbage).           │
+  │                                                                    │
+  │  Phase 3: Concurrent Preclean (CONCURRENT)                        │
+  │           Handle references changed during Concurrent Mark.        │
+  │                                                                    │
+  │  Phase 4: Remark            (STW -- short)                         │
+  │           Fix up changes made during Concurrent Mark phase.        │
+  │           Shorter than Initial Mark.                               │
+  │                                                                    │
+  │  Phase 5: Concurrent Sweep  (CONCURRENT)                          │
+  │           Reclaim dead objects. App threads run.                   │
+  │                                                                    │
+  │  Phase 6: Concurrent Reset  (CONCURRENT)                          │
+  │           Reset data structures for next cycle.                    │
+  │                                                                    │
+  └────────────────────────────────────────────────────────────────────┘
+
+  TIMELINE:
+  App:  ──────────────│STW│──────────────────────────│STW│──────────────
+  GC:                 │IM │──CM──────────────CP───────│RE │──CS──────────
+
+  PROS:  Low pause times (most work concurrent).
+  CONS:  NO COMPACTION (sweep leaves fragmentation).
+         Concurrent Mode Failure: if Old Gen fills during concurrent cycle
+         --> emergency Full GC with compaction (long pause -- worst case).
+         Higher CPU usage (GC and app compete for CPU).
+         20-30% more memory needed (fragmentation).
+  REMOVED: Java 14 (G1 is better in every way).
+```
+
+---
+
+### 4. G1GC — Garbage First (Java 9+ Default)
+
+```
+  Enable: -XX:+UseG1GC  (default since Java 9)
+  Target: -XX:MaxGCPauseMillis=200 (default 200ms -- best effort)
+
+  REVOLUTIONARY CHANGE: No fixed Young/Old regions.
+  Heap divided into equal-sized REGIONS (1MB to 32MB each).
+
+  ┌────────────────────────────────────────────────────────────────────┐
+  │                         G1 HEAP                                    │
+  │                                                                    │
+  │  ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐  │
+  │  │ E │ E │ S │ O │ E │ H │ O │ E │ S │ O │ E │ E │ O │ H │ E │  │
+  │  └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘  │
+  │                                                                    │
+  │  E = Eden region      (Young Gen -- assigned dynamically)          │
+  │  S = Survivor region  (Young Gen -- assigned dynamically)          │
+  │  O = Old region       (Old Gen -- assigned dynamically)            │
+  │  H = Humongous region (objects > 50% of region size)              │
+  │  [empty] = free                                                    │
+  └────────────────────────────────────────────────────────────────────┘
+
+  WHY "GARBAGE FIRST"?
+  Each region tracked for "liveness" (% of live objects).
+  G1 collects regions with MOST GARBAGE FIRST.
+  Highest ROI: collect region with 90% garbage = 90% space freed.
+  Skip regions with 10% garbage = not worth the effort yet.
+
+
+  G1 PHASES:
+  ===========
+
+  YOUNG GC (Minor -- STW):
+  - Eden regions fill up --> Young GC triggered
+  - Live objects copied to Survivor/Old regions
+  - All Eden regions reclaimed
+  - Parallel STW (like Parallel GC but region-based)
+
+  CONCURRENT MARKING CYCLE (when Old Gen > InitiatingHeapOccupancyPercent):
+  Phase 1: Initial Mark      (piggybacked on Young GC -- STW)
+  Phase 2: Root Region Scan  (CONCURRENT -- scan Survivor regions)
+  Phase 3: Concurrent Mark   (CONCURRENT -- mark all live objects)
+  Phase 4: Remark            (STW -- short -- finalize marking)
+  Phase 5: Cleanup           (STW -- short -- reclaim empty regions)
+  Phase 6: Concurrent Cleanup(CONCURRENT -- reset regions)
+
+  MIXED GC (after marking cycle -- STW):
+  - Collects ALL Young regions + SELECTED Old regions
+  - Selects Old regions with most garbage (Garbage First!)
+  - Incremental: small predictable pauses
+  - Runs several Mixed GC cycles to clean up Old Gen
+
+  FULL GC (last resort -- STW -- serial):
+  - Only if Mixed GC can't keep up
+  - Single-threaded Mark-Sweep-Compact of entire heap
+  - Goal: NEVER trigger Full GC in production
+
+
+  KEY FLAGS:
+  -XX:MaxGCPauseMillis=200           (pause target)
+  -XX:InitiatingHeapOccupancyPercent=45  (start concurrent marking at 45% heap)
+  -XX:G1HeapRegionSize=16m           (region size -- power of 2, 1-32MB)
+  -XX:G1NewSizePercent=5             (min Young Gen %)
+  -XX:G1MaxNewSizePercent=60         (max Young Gen %)
+  -XX:G1MixedGCCountTarget=8         (how many Mixed GCs to spread cleanup)
+  -XX:G1ReservePercent=10            (keep 10% heap as buffer)
+
+  PROS:  Predictable pauses, good throughput, handles large heaps.
+         No fragmentation (always compacts during copy).
+         Self-tuning with pause target.
+  CONS:  More memory overhead than Parallel GC (region tracking).
+         Not ideal for very low latency (< 10ms pause requirement).
+  USE:   DEFAULT for most production Java apps.
+         Heap 4GB to 32GB. Balanced throughput + latency.
+```
+
+---
+
+### 5. ZGC — Z Garbage Collector
+
+```
+  Enable: -XX:+UseZGC  (production Java 15+)
+          Java 21: -XX:+UseZGC -XX:+ZGenerational (Generational ZGC)
+
+  GOAL: Sub-millisecond pause times regardless of heap size.
+
+  KEY INNOVATION: Colored Pointers + Load Barriers
+
+  COLORED POINTERS:
+  =================
+  ZGC stores metadata IN the object reference pointer itself.
+  64-bit pointer: [metadata bits | object address]
+
+  Bits used:
+  Bit 42: Marked0   -- object marked in current GC cycle?
+  Bit 43: Marked1   -- object marked in previous GC cycle?
+  Bit 44: Remapped  -- reference pointing to new location?
+  Bit 45: Finalizable -- object has finalizer?
+
+  ZGC never needs to stop app threads to check liveness --
+  the pointer itself carries the GC state.
+
+  LOAD BARRIER:
+  =============
+  Every time app thread LOADS an object reference:
+  JIT-compiled code inserts a tiny barrier check:
+
+  Order order = map.get("key");
+  // JIT inserts:
+  // if (reference needs healing) healReference(reference);
+  // then use healed reference
+
+  "Healing" = update stale reference to point to new object location.
+  Done lazily, on access, not all at once.
+  This is how ZGC relocates objects WHILE app threads run.
+
+  PHASES (almost all concurrent):
+  =================================
+  Phase 1: Pause Mark Start   (STW -- < 1ms)
+           Mark GC roots only
+
+  Phase 2: Concurrent Mark    (CONCURRENT)
+           Traverse all reachable objects
+           App threads run, load barriers track new references
+
+  Phase 3: Pause Mark End     (STW -- < 1ms)
+           Finalize marking
+
+  Phase 4: Concurrent Process Non-Strong References (CONCURRENT)
+           Handle weak/soft/phantom references
+
+  Phase 5: Concurrent Relocate Set Selection (CONCURRENT)
+           Choose which regions to compact
+
+  Phase 6: Pause Relocate Start (STW -- < 1ms)
+           Mark roots for relocation
+
+  Phase 7: Concurrent Relocate  (CONCURRENT)
+           Move objects to new locations
+           App threads can still access objects via load barrier healing
+
+  TIMELINE:
+  App:  ─────│<1ms│──────────────────────────│<1ms│─────
+  GC:        │STW │──────CONCURRENT───────────│STW │────
+
+  PROS:  < 1ms pause regardless of 1GB or 16TB heap.
+         Heap can be terabytes.
+         Pause time doesn't scale with heap size.
+  CONS:  ~5-15% throughput reduction vs G1/Parallel.
+         Requires 64-bit JVM (colored pointers use address bits).
+         More memory overhead (multi-mapping of heap pages).
+  USE:   Financial trading, real-time bidding, gaming servers.
+         Any system where latency > throughput.
+         Large heap (> 32GB) applications.
+
+  JAVA 21 -- GENERATIONAL ZGC:
+  ==============================
+  Original ZGC had no generations (scanned everything).
+  Java 21 adds generational support to ZGC.
+  Young and Old generations within ZGC's region model.
+  Better throughput while keeping sub-ms pauses.
+  Enable: -XX:+UseZGC -XX:+ZGenerational
+```
+
+---
+
+### 6. Shenandoah GC
+
+```
+  Enable: -XX:+UseShenandoahGC  (production Java 15+, Red Hat)
+
+  SIMILAR TO ZGC but different approach:
+  Uses Brooks Pointers (forwarding pointer in object header)
+  instead of colored pointers.
+
+  Every object has an extra pointer field:
+  [Brooks Pointer] --> current location of object
+
+  During relocation: Brooks Pointer updated to new location.
+  App threads read through Brooks Pointer -- always find correct object.
+
+  Pause times: < 10ms typically.
+  No generations (original -- Java 21 adds experimental generational mode).
+  Available in OpenJDK from Java 12.
+
+  ZGC vs Shenandoah:
+  Both: low latency, concurrent relocation
+  ZGC:  colored pointers (in reference), no object header overhead
+  Shen: Brooks pointer (in object), simpler JIT barrier
+  ZGC has slightly lower pause times, Shenandoah slightly simpler.
+```
+
+---
+
+### 7. Epsilon GC (Java 11)
+
+```
+  Enable: -XX:+UseEpsilonGC -XX:+UnlockExperimentalVMOptions
+
+  No-op GC. Allocates memory. Never collects.
+  OOM when heap exhausted.
+
+  USE: Benchmarking, short-lived tools, GC overhead measurement.
+  NEVER: Production long-running apps.
+```
+
+---
+
+## GC Comparison Table
+
+```
+  GC              Default    Young       Old         Pause      Throughput  Heap
+  ──────────────────────────────────────────────────────────────────────────────────
+  Serial          Java 1-8   Serial copy Serial MSC  Long STW   Low         Small
+  Parallel        Java 8     Parallel    Parallel     Medium STW  High       Medium
+  CMS             removed    Parallel    Concurrent   Short STW  Medium      Medium
+  G1GC            Java 9+    Parallel    Concurrent   ~200ms     High        Large
+  ZGC             Java 15+   Concurrent  Concurrent   <1ms       Medium      Any
+  Shenandoah      Java 15+   Concurrent  Concurrent   <10ms      Medium      Any
+  Epsilon         Java 11    None        None         None       Max(no GC)  Tiny
+
+
+  CHOOSE BY USE CASE:
+  ===================
+  Batch / data processing     --> Parallel GC (maximize throughput)
+  General web application     --> G1GC (default -- balanced)
+  Large heap (>32GB)          --> G1GC or ZGC
+  Ultra-low latency (<10ms)   --> ZGC or Shenandoah
+  Sub-millisecond latency     --> ZGC
+  Benchmarking / short-lived  --> Epsilon GC
+  Single CPU / tiny heap      --> Serial GC
+```
+
+---
+
+## GC Tuning Flags
+
+```
+  HEAP SIZING:
+  ============
+  -Xms512m                    Initial heap size
+  -Xmx4g                      Maximum heap size
+  -Xmn1g                      Young Gen size (fixed)
+  -XX:NewRatio=2               Old:Young ratio (2 = Old is 2x Young)
+  -XX:SurvivorRatio=8          Eden:Survivor ratio (8 = Eden is 8x each Survivor)
+  -XX:MaxTenuringThreshold=15  Age before promotion to Old Gen
+
+  ALWAYS SET: -Xms == -Xmx in production (avoid resize pauses)
+
+
+  GC LOGGING (Java 8):
+  ====================
+  -verbose:gc
+  -XX:+PrintGCDetails
+  -XX:+PrintGCDateStamps
+  -XX:+PrintGCTimeStamps
+  -Xloggc:/var/log/gc.log
+
+  GC LOGGING (Java 9+ Unified Logging):
+  ======================================
+  -Xlog:gc*:file=/var/log/gc.log:time,uptime,level,tags
+  -Xlog:gc:stdout                   (simple to stdout)
+  -Xlog:gc*                         (verbose to stdout)
+  -Xlog:gc+heap=debug               (heap details)
+
+
+  G1GC SPECIFIC:
+  ==============
+  -XX:MaxGCPauseMillis=200
+  -XX:InitiatingHeapOccupancyPercent=45
+  -XX:G1HeapRegionSize=16m
+  -XX:G1ReservePercent=10
+  -XX:ConcGCThreads=4               (concurrent GC threads)
+  -XX:ParallelGCThreads=8           (STW GC threads)
+
+  ZGC SPECIFIC:
+  =============
+  -XX:SoftMaxHeapSize=28g           (soft limit -- GC tries to stay under)
+  -XX:ZCollectionInterval=0         (0 = GC only when needed)
+  -XX:ZFragmentationLimit=25        (fragmentation threshold)
+```
+
+---
+
+## Code Examples
+
+```java
+// ── Requesting GC (hint -- NOT guaranteed) ────────────────────────────
+System.gc();
+// JVM may or may not run GC. Never rely on this in production.
+// Good for: after loading large data and before performance-critical section.
+
+Runtime.getRuntime().gc();
+// Same as System.gc() -- both call the same underlying JVM method.
+
+
+// ── Checking heap memory ──────────────────────────────────────────────
+Runtime runtime = Runtime.getRuntime();
+
+long totalMemory = runtime.totalMemory();   // current heap size (allocated)
+long freeMemory  = runtime.freeMemory();    // free within current heap
+long maxMemory   = runtime.maxMemory();     // max heap (-Xmx)
+long usedMemory  = totalMemory - freeMemory;
+
+System.out.println("Used:  " + usedMemory  / (1024 * 1024) + " MB");
+System.out.println("Free:  " + freeMemory  / (1024 * 1024) + " MB");
+System.out.println("Total: " + totalMemory / (1024 * 1024) + " MB");
+System.out.println("Max:   " + maxMemory   / (1024 * 1024) + " MB");
+
+
+// ── finalize() -- called before GC collects object (deprecated Java 9) ─
+// DON'T USE in production -- unpredictable, may never be called
+public class OldStyle {
+    @Override
+    @Deprecated
+    protected void finalize() throws Throwable {
+        // called by GC before collecting this object
+        // NOT guaranteed to run, NOT guaranteed when it runs
+        System.out.println("Being collected");
+        super.finalize();
+    }
+}
+
+
+// ── Cleaner API (Java 9+ replacement for finalize) ────────────────────
+import java.lang.ref.Cleaner;
+
+public class ResourceHolder implements AutoCloseable {
+
+    private static final Cleaner cleaner = Cleaner.create();
+
+    private final Cleaner.Cleanable cleanable;
+    private final NativeResource resource;
+
+    public ResourceHolder() {
+        this.resource = new NativeResource();
+        // register cleanup action -- runs when ResourceHolder is GC'd
+        // IMPORTANT: lambda must NOT hold reference to ResourceHolder (memory leak)
+        this.cleanable = cleaner.register(this, resource::cleanup);
+    }
+
+    @Override
+    public void close() {
+        cleanable.clean();  // explicit close -- preferred path
+    }
+
+    static class NativeResource {
+        void cleanup() {
+            System.out.println("Cleaning up native resource");
+        }
+    }
+}
+
+// Usage -- try-with-resources (preferred):
+try (ResourceHolder rh = new ResourceHolder()) {
+    // use rh
+}
+// close() called automatically -- cleanup runs
+
+
+// ── Reference types -- control GC behavior ────────────────────────────
+import java.lang.ref.*;
+
+// STRONG reference -- default, prevents GC
+Order order = new Order();           // strong reference
+// order eligible for GC only when this reference = null or out of scope
+
+// SOFT reference -- GC only when memory LOW (good for caches)
+SoftReference<Order> softOrder = new SoftReference<>(new Order());
+Order o1 = softOrder.get();          // null if GC collected it
+if (o1 == null) {
+    // reload from DB -- evicted due to memory pressure
+}
+
+// WEAK reference -- GC at NEXT collection (regardless of memory)
+WeakReference<Order> weakOrder = new WeakReference<>(new Order());
+Order o2 = weakOrder.get();          // null after next GC
+// Used in WeakHashMap -- keys collected when no strong refs
+
+// PHANTOM reference -- enqueued AFTER object finalized (monitoring GC)
+ReferenceQueue<Order> queue = new ReferenceQueue<>();
+PhantomReference<Order> phantomOrder =
+    new PhantomReference<>(new Order(), queue);
+// phantomOrder.get() ALWAYS returns null
+// Used for: cleanup actions, off-heap memory tracking, resource deallocation
+
+// REFERENCE STRENGTH ORDER:
+// Strong > Soft > Weak > Phantom
+// Strong: never GC'd while referenced
+// Soft:   GC'd when heap pressure high (JVM decides)
+// Weak:   GC'd at next GC cycle
+// Phantom: GC'd, then enqueued for cleanup notification
+
+
+// ── Programmatic GC monitoring with JMX ──────────────────────────────
+import java.lang.management.*;
+import javax.management.*;
+
+// Get all GC beans:
+List<GarbageCollectorMXBean> gcBeans =
+    ManagementFactory.getGarbageCollectorMXBeans();
+
+for (GarbageCollectorMXBean gcBean : gcBeans) {
+    System.out.println("GC Name:        " + gcBean.getName());
+    System.out.println("GC Count:       " + gcBean.getCollectionCount());
+    System.out.println("GC Total Time:  " + gcBean.getCollectionTime() + " ms");
+    System.out.println("Memory Pools:   " + Arrays.toString(gcBean.getMemoryPoolNames()));
+}
+// Output example (G1GC):
+// GC Name:  G1 Young Generation,  Count: 142, Time: 1823ms
+// GC Name:  G1 Old Generation,    Count: 2,   Time: 456ms
+
+
+// Get memory pools:
+List<MemoryPoolMXBean> memPools =
+    ManagementFactory.getMemoryPoolMXBeans();
+
+for (MemoryPoolMXBean pool : memPools) {
+    MemoryUsage usage = pool.getUsage();
+    System.out.printf("Pool: %-30s Used: %6dMB  Max: %6dMB%n",
+        pool.getName(),
+        usage.getUsed() / 1024 / 1024,
+        usage.getMax()  / 1024 / 1024);
+}
+// Output:
+// Pool: G1 Eden Space                Used:    256MB  Max:     -1MB
+// Pool: G1 Survivor Space            Used:     32MB  Max:     -1MB
+// Pool: G1 Old Gen                   Used:    890MB  Max:   4096MB
+// Pool: Metaspace                    Used:    128MB  Max:     -1MB
+// Pool: CodeHeap 'non-nmethods'      Used:      2MB  Max:      5MB
+
+
+// ── GC Notification Listener ──────────────────────────────────────────
+for (GarbageCollectorMXBean gcBean : gcBeans) {
+    if (gcBean instanceof NotificationEmitter emitter) {
+        emitter.addNotificationListener((notification, handback) -> {
+            if (notification.getType()
+                    .equals(GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION)) {
+
+                GarbageCollectionNotificationInfo info =
+                    GarbageCollectionNotificationInfo.from(
+                        (CompositeData) notification.getUserData());
+
+                System.out.printf("GC: %s | Cause: %s | Duration: %dms%n",
+                    info.getGcName(),
+                    info.getGcCause(),
+                    info.getGcInfo().getDuration());
+            }
+        }, null, null);
+    }
+}
+// Fires callback on every GC event -- use for production GC monitoring
+
+
+// ── Spring Boot Actuator GC metrics ───────────────────────────────────
+// Add dependency: spring-boot-starter-actuator + micrometer
+// Exposes automatically at: /actuator/metrics/jvm.gc.pause
+// {
+//   "name": "jvm.gc.pause",
+//   "measurements": [{"statistic":"COUNT","value":47},
+//                    {"statistic":"TOTAL_TIME","value":2.341}]
+// }
+```
+
+---
+
+## GC Changes by Java Version
+
+```
+  JAVA VERSION    GC CHANGES
+  ──────────────────────────────────────────────────────────────────────────────────
+
+  Java 1-4        Serial GC only.
+                  Single-threaded. STW for everything.
+
+  Java 1.4        Parallel GC introduced.
+                  CMS (Concurrent Mark Sweep) introduced.
+                  Multiple GC threads for Young Gen.
+
+  Java 5          Ergonomics: JVM auto-selects GC based on machine type.
+                  Server-class machine (2+ CPUs, 2GB+ RAM) --> Parallel GC.
+                  Client machine --> Serial GC.
+
+  Java 6          CMS improvements.
+                  Parallel compaction in Old Gen for Parallel GC.
+                  Incremental CMS mode (iCMS) for limited CPU.
+
+  Java 7          G1GC introduced as experimental.
+                  Available with -XX:+UseG1GC but not default.
+                  Compressed class pointers (UseCompressedClassPointers).
+                  Compressed object pointers (UseCompressedOops) -- 32-bit refs
+                  in 64-bit JVM when heap < 32GB (saves 30-50% object overhead).
+
+  Java 8          PermGen REMOVED --> Metaspace (native memory).
+                  G1GC improved but still not default.
+                  Parallel GC remains default.
+                  HashMap treeification (Java 8 -- not GC but related to memory).
+                  String deduplication in G1GC (-XX:+UseStringDeduplication).
+
+  Java 9          G1GC becomes DEFAULT GC.
+                  CMS deprecated.
+                  Unified JVM logging (-Xlog:gc*).
+                  Compact Strings (String stores Latin-1 chars as byte[] not char[]).
+                  InterimSharedCCAStrings -- better string interning.
+
+  Java 10         Parallel Full GC for G1 (previously G1 Full GC was single-threaded).
+                  Heap allocation on alternative memory devices (NVDIMM).
+
+  Java 11         ZGC introduced as experimental.
+                  Epsilon GC (no-op) introduced.
+                  JFR (Java Flight Recorder) open-sourced.
+                  CMS still present but deprecated.
+                  Lazy allocation of compiler threads.
+
+  Java 12         Shenandoah GC experimental (from Red Hat).
+                  G1GC: Abortable Mixed GC (can abort if exceeding pause target).
+                  G1GC: Return unused committed memory to OS promptly.
+                  JVM Constants API.
+
+  Java 13         ZGC: Return unused memory to OS.
+                  ZGC: Max heap 16TB (was 4TB).
+                  Shenandoah improvements.
+
+  Java 14         CMS REMOVED permanently.
+                  ZGC ported to macOS and Windows (was Linux only).
+                  G1GC NUMA-aware allocation.
+
+  Java 15         ZGC production-ready (no longer experimental).
+                  Shenandoah production-ready.
+                  Disabled biased locking (optimization that caused long safepoints).
+
+  Java 16         ZGC: Concurrent thread stack scanning (shorter STW).
+                  G1GC: Faster return of memory to OS.
+                  Unix domain socket channels.
+
+  Java 17         ZGC: Improved NUMA awareness.
+                  Sealed classes (affects class loading / Metaspace).
+                  Strong encapsulation of JDK internals.
+
+  Java 18         SerialGC: Parallel GC threads for Old Gen.
+                  ZGC improvements.
+
+  Java 19         ZGC: Generational ZGC preview.
+                  Virtual threads preview (Project Loom -- affects GC: more
+                  objects per thread but smaller stacks).
+
+  Java 21         Generational ZGC production: -XX:+UseZGC -XX:+ZGenerational.
+                  Virtual threads GA (lightweight threads, better GC behavior).
+                  ZGC: Sub-millisecond pauses even for generational mode.
+
+  KEY REMOVALS TIMELINE:
+  ======================
+  Java 8:  PermGen removed (Metaspace)
+  Java 9:  CMS deprecated, G1 default
+  Java 14: CMS removed
+  Java 15: ZGC + Shenandoah production
+  Java 21: Generational ZGC production
+```
+
+---
+
+## Common GC Problems and Solutions
+
+```
+  PROBLEM 1: OutOfMemoryError: Java heap space
+  =============================================
+  Cause:   Heap too small OR memory leak (objects never become unreachable)
+  Detect:  -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heap.hprof
+  Analyze: Eclipse Memory Analyzer (MAT), VisualVM
+  Fix:     Increase -Xmx OR fix the leak
+           Common leaks: static collections growing forever,
+           ThreadLocal not removed, unclosed streams/connections,
+           listeners not unregistered, caches without eviction
+
+
+  PROBLEM 2: OutOfMemoryError: Metaspace
+  =======================================
+  Cause:   Too many classes loaded (dynamic class generation, heavy frameworks)
+           ClassLoaders not garbage collected (common in app servers)
+  Fix:     -XX:MaxMetaspaceSize=512m (cap it)
+           Fix classloader leak -- ensure old classloaders become unreachable
+           Common in: OSGi, hot-deploy, reflection-heavy code
+
+
+  PROBLEM 3: Frequent Full GC
+  ============================
+  Cause:   Old Gen fills too fast (premature promotion or large objects)
+           Concurrent GC can't keep up
+  Detect:  GC logs show frequent "Full GC (Ergonomics)"
+  Fix:     Increase heap, increase Young Gen size (-Xmn or -XX:NewRatio)
+           Increase InitiatingHeapOccupancyPercent (start concurrent marking earlier)
+           Reduce object allocation rate
+
+
+  PROBLEM 4: Long GC Pauses
+  ==========================
+  Cause:   Large Old Gen, Full GC triggered, STW compaction
+  Fix:     Switch to G1GC with -XX:MaxGCPauseMillis=200
+           Switch to ZGC for sub-ms pauses
+           Increase heap to delay Full GC
+           Profile and reduce object allocation rate
+
+
+  PROBLEM 5: Memory Leak Patterns in Java
+  ========================================
+  // 1. Static field holding growing collection
+  static Map<String, Order> cache = new HashMap<>();
+  // cache.put() called forever, never cleared, never evicted
+
+  // 2. ThreadLocal not removed
+  ThreadLocal<Connection> local = new ThreadLocal<>();
+  local.set(conn);
+  // Must call local.remove() -- especially in thread pool (threads reused)
+  // Without remove: connection held forever by thread
+
+  // 3. Listeners not unregistered
+  eventBus.register(this);
+  // If object is never unregistered, eventBus holds reference forever
+  // Object cannot be GC'd even if logically "done"
+
+  // 4. Inner class holding outer class reference
+  class Outer {
+      class Inner {
+          // Inner implicitly holds reference to Outer.this
+          // If Inner object lives long, Outer cannot be GC'd
+      }
+      // FIX: use static nested class if outer reference not needed
+      static class StaticInner { }
+  }
+
+  // 5. Unclosed resources
+  Connection conn = dataSource.getConnection();
+  // if exception before conn.close() -- connection never returned to pool
+  // FIX: always use try-with-resources
+  try (Connection conn2 = dataSource.getConnection()) { }
+```
+
+---
+
+## Interview Tricky Q&A
+
+```
+  Q: "What is the difference between Minor GC, Major GC, and Full GC?"
+  A: Minor GC: collects Young Generation (Eden + Survivors). Fast, frequent.
+               STW but short (small region). 99% of objects die here.
+     Major GC: collects Old Generation. Slower, less frequent.
+               STW or partially concurrent depending on GC.
+     Full GC:  collects entire heap (Young + Old + Metaspace). Slowest.
+               Triggered by: System.gc(), Metaspace full, concurrent GC failure.
+               Always STW in most GCs (G1 Full GC was single-threaded until Java 10).
+     NOTE: "Major GC" is informal -- JVM logs say "Full GC" for Old Gen collection.
+
+
+  Q: "Can objects in Old Gen reference objects in Young Gen? How does GC handle this?"
+  A: YES. Old Gen objects can reference Young Gen objects.
+     Problem: Minor GC only scans Young Gen -- would miss Old->Young references.
+     Solution: REMEMBERED SET (Card Table).
+     Heap divided into 512-byte cards.
+     When Old Gen object's reference field is written:
+       write barrier marks that card as "dirty".
+     During Minor GC: dirty cards in Old Gen scanned for Young Gen references.
+     These Old Gen references treated as additional GC roots.
+     Young Gen objects referenced from Old Gen NOT collected.
+     This is called "cross-generational reference handling."
+
+
+  Q: "What is a safepoint in JVM?"
+  A: A point in program execution where JVM can safely stop threads.
+     All threads must reach a safepoint before STW GC can begin.
+     Threads not at safepoint must reach one: at method calls,
+     loop back-edges, JNI calls, etc.
+     Time from GC decision to all threads at safepoint = Time To Safepoint (TTS).
+     Long TTS = one thread executing a long native method (can't be interrupted).
+     G1 logs: "Application time: 0.1s" / "Stopping threads: 0.001s" -- that's TTS.
+
+
+  Q: "Why is System.gc() bad in production?"
+  A: 1. Triggers Full GC -- longest pause, stops all threads.
+     2. Not guaranteed -- JVM may ignore it (-XX:+DisableExplicitGC flag).
+     3. JVM's GC knows better when to collect -- System.gc() disrupts auto-tuning.
+     4. May cause unnecessary collection when heap pressure is actually fine.
+     Only acceptable: after releasing huge data structures, before benchmarking.
+     Production: always use -XX:+DisableExplicitGC to prevent library code
+     (e.g. RMI) from calling System.gc().
+
+
+  Q: "What is GC ergonomics?"
+  A: JVM automatically tunes GC parameters at runtime to meet goals.
+     Goals: throughput (% of time in GC) and pause time.
+     Ergonomics auto-adjusts: heap size, Eden/Survivor ratios,
+     tenuring threshold based on observed GC behavior.
+     Parallel GC: adjusts sizes to meet -XX:GCTimeRatio and -XX:MaxGCPauseMillis.
+     G1GC: adjusts Young Gen size to meet -XX:MaxGCPauseMillis.
+     Can be overridden with explicit flags.
+
+
+  Q: "What is String deduplication in G1GC?"
+  A: Strings are the most common object type (often 25-35% of heap).
+     Many are duplicates: "GET", "POST", "application/json" etc.
+     -XX:+UseStringDeduplication (Java 8+, G1 only):
+     G1 identifies duplicate String char[] arrays.
+     Replaces duplicates with reference to single shared array.
+     Saves memory without changing String API.
+     Deduplication runs concurrently (no STW).
+     Only deduplicates strings that survived > 1 GC (likely long-lived).
+
+
+  Q: "Explain memory leak in ThreadLocal."
+  A: ThreadLocal stores value per-thread in Thread.threadLocals map.
+     In a thread pool, threads are REUSED -- they live forever.
+     If ThreadLocal.remove() not called: old value stays in thread forever.
+     Even if the ThreadLocal reference itself is null'd (GC'd),
+     the VALUE it held remains in the thread's map (WeakKey, but strong value).
+     Fix: always call threadLocal.remove() in finally block.
+     Common in: Spring's RequestContextHolder, SecurityContextHolder,
+     Hibernate session management.
+
+
+  Q: "What is Compressed OOPs?"
+  A: On 64-bit JVM with heap < 32GB:
+     Object references would normally be 64-bit (8 bytes).
+     Compressed OOPs (-XX:+UseCompressedOops -- default Java 7+):
+     Stores references as 32-bit, shifted by 3 bits (8-byte alignment).
+     Allows addressing 32GB with 32-bit pointer (2^32 * 8 = 32GB).
+     Saves 30-50% memory on object graphs.
+     Automatically disabled when heap > 32GB.
+     Tip: keep heap < 32GB to benefit from Compressed OOPs.
+     Going from 28GB to 33GB heap might make app SLOWER (no more compressed OOPs).
+
+
+  Q: "What is the difference between -Xmx and -XX:MaxHeapSize?"
+  A: They are identical. -Xmx is shorthand for -XX:MaxHeapSize.
+     -Xmx4g == -XX:MaxHeapSize=4g
+
+
+  Q: "How does G1GC differ from CMS for Old Gen collection?"
+  A: CMS: concurrent mark + sweep (no compaction) -- fragmentation.
+          Concurrent Mode Failure if heap fills --> emergency Full GC.
+          Fixed split between Young and Old (contiguous regions).
+     G1:  region-based heap (no fixed Young/Old boundary).
+          Mixed GC: collects selected Old regions WITH Young (compacting copy).
+          No fragmentation -- always compacts during region evacuation.
+          Predictable pauses via pause target.
+          Handles Concurrent Mode Failure better (more incremental).
+     G1 is strictly better than CMS -- why CMS was removed in Java 14.
+
+
+  Q: "What is humongous allocation in G1GC?"
+  A: Objects > 50% of G1 region size are "humongous."
+     Allocated directly in Old Gen (contiguous regions).
+     Bypasses Eden/Young Gen entirely.
+     Can trigger concurrent marking cycle (counted against Old Gen threshold).
+     GC impact: humongous objects only collected during Full GC or
+                concurrent marking cleanup.
+     Fix: reduce large object sizes, or increase G1HeapRegionSize
+          so objects are no longer "humongous."
+     Common cause: large arrays, byte buffers, Kafka message batches.
+```
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

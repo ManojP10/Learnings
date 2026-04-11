@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here's everything in chat — complete Java Collections coverage from basics to interview depth.
+
+---
+
+## Collections Framework — Big Picture
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                         JAVA COLLECTIONS FRAMEWORK                                |
+  +-----------------------------------------------------------------------------------+
+
+                          <<Iterable>>
+                               |
+                          <<Collection>>
+                    ┌──────────┼──────────┐
+                    |          |          |
+                 <<List>>   <<Set>>   <<Queue>>
+                    |          |          |
+          ┌─────────┤    ┌─────┤    ┌─────┤
+          |         |    |     |    |     |
+      ArrayList  LinkedList  HashSet  LinkedHashSet  PriorityQueue
+      Vector     Stack    TreeSet              ArrayDeque
+      CopyOnWriteArrayList                     LinkedList
+
+
+                          <<Map>>  (NOT a Collection)
+                    ┌──────────┼──────────┐
+                    |          |          |
+                 HashMap   LinkedHashMap  TreeMap
+                 Hashtable  WeakHashMap   EnumMap
+                 ConcurrentHashMap
+                 IdentityHashMap
+
+
+  FAIL-FAST vs FAIL-SAFE:
+  ========================
+  Fail-Fast   --> throws ConcurrentModificationException if modified during iteration
+                  ArrayList, HashMap, HashSet (uses modCount internally)
+
+  Fail-Safe   --> iterates on a COPY, no exception, may not see latest changes
+                  ConcurrentHashMap, CopyOnWriteArrayList
+
+
+  ORDERING:
+  =========
+  Insertion order  --> ArrayList, LinkedList, LinkedHashMap, LinkedHashSet
+  Sorted order     --> TreeMap (key), TreeSet (natural/comparator)
+  Priority order   --> PriorityQueue (natural/comparator)
+  No order         --> HashMap, HashSet (bucket-based, unpredictable)
+```
+
+---
+
+## 1. List — ArrayList vs LinkedList vs Vector vs CopyOnWriteArrayList
+
+```
+  INTERNAL STRUCTURE:
+  ===================
+
+  ArrayList:
+  +----+----+----+----+----+----+----+----+----+----+
+  | 0  | 1  | 2  | 3  | 4  |    |    |    |    |    |   <-- Object[]
+  +----+----+----+----+----+----+----+----+----+----+
+   index-based, contiguous memory, default capacity=10
+
+  LinkedList:
+  [HEAD] --> [node|data|next] --> [node|data|next] --> [node|data|next] --> null
+             [prev|data|    ] <-- [prev|data|    ] <-- [prev|data|    ]
+   doubly linked, non-contiguous, each node has prev+next pointer
+
+  CopyOnWriteArrayList:
+  READ:   always from current snapshot (no lock)
+  WRITE:  copies entire array, modifies copy, replaces reference (lock held during copy)
+  [T1 reading old array] [T2 writing to new copy] --> swap atomically
+
+
+  COMPARISON TABLE:
+  =================
+
+  OPERATION          ArrayList       LinkedList        Notes
+  ─────────────────────────────────────────────────────────────────────────
+  get(index)         O(1)            O(n)              AL wins -- direct index
+  add(end)           O(1) amortized  O(1)              Both fast
+  add(middle)        O(n)            O(n)*             *LL: find node O(n) + insert O(1)
+  remove(index)      O(n)            O(n)*             Both shift/traverse
+  remove(object)     O(n)            O(n)              Both scan
+  contains()         O(n)            O(n)              Both scan
+  Memory             Less            More              LL: 2 pointers per node overhead
+  Cache friendliness High            Low               AL: contiguous, cache hits
+
+
+  WHEN TO USE:
+  ============
+  ArrayList    --> default choice. Random access, mostly reads.
+  LinkedList   --> frequent insert/delete at KNOWN position (iterator).
+                   Also used as Deque (addFirst/addLast).
+  CopyOnWrite  --> read-heavy, rarely written, multi-threaded. (Event listeners)
+  Vector       --> legacy, synchronized on every method. Use ArrayList + sync or ConcurrentList.
+
+
+  ArrayList RESIZING:
+  ===================
+  Default capacity = 10
+  When full: new capacity = old * 1.5 (roughly)
+  Elements copied to new array (System.arraycopy)
+  You can pre-size: new ArrayList<>(1000) -- avoids repeated resizing
+
+  INTERVIEW TRICK:
+  Q: "Is ArrayList thread-safe?"
+  A: No. Use Collections.synchronizedList(new ArrayList<>()) for basic sync,
+     or CopyOnWriteArrayList for read-heavy concurrent use.
+
+  Q: "LinkedList is faster than ArrayList for insertions -- true or false?"
+  A: FALSE in practice. ArrayList's contiguous memory wins due to CPU cache.
+     LinkedList only wins for insertions at a KNOWN iterator position.
+     Random insertions in LinkedList still require O(n) traversal to find position.
+```
+
+---
+
+## 2. Set — HashSet vs LinkedHashSet vs TreeSet
+
+```
+  INTERNAL STRUCTURE:
+  ===================
+
+  HashSet  --> backed by HashMap internally
+               add("A") --> map.put("A", PRESENT)  // PRESENT = dummy Object value
+               Uses hashCode() + equals() for uniqueness
+
+  LinkedHashSet --> backed by LinkedHashMap
+                   maintains insertion order via doubly-linked list of entries
+
+  TreeSet --> backed by TreeMap (Red-Black Tree)
+              always sorted (natural order or Comparator)
+              no null allowed (needs to compare, null has no natural order)
+
+
+  COMPARISON TABLE:
+  =================
+
+  OPERATION     HashSet    LinkedHashSet    TreeSet         Notes
+  ────────────────────────────────────────────────────────────────────────
+  add()         O(1)       O(1)             O(log n)        TreeSet maintains sort
+  remove()      O(1)       O(1)             O(log n)
+  contains()    O(1)       O(1)             O(log n)
+  Ordering      None       Insertion        Sorted
+  Null          1 null     1 null           NO null
+  Thread-safe   No         No               No
+
+
+  WHEN TO USE:
+  ============
+  HashSet        --> unique elements, order doesn't matter (fastest)
+  LinkedHashSet  --> unique + insertion order matters (e.g. dedup keeping order)
+  TreeSet        --> unique + always sorted (e.g. leaderboard, range queries)
+
+
+  INTERVIEW TRICK:
+  Q: "What happens if you add a mutable object to a HashSet, then mutate it?"
+  A: DISASTER.
+     Set<List<Integer>> set = new HashSet<>();
+     List<Integer> list = new ArrayList<>(Arrays.asList(1,2,3));
+     set.add(list);
+     list.add(4);          // mutate the list
+     set.contains(list);   // FALSE -- hashCode changed, bucket changed
+     // The set still holds the list but CANNOT find it anymore
+     // This breaks the Set contract silently
+
+  Q: "Can HashSet have duplicate hashCodes?"
+  A: YES. Two objects can have same hashCode but different equals() -- collision.
+     Both stored in same bucket as a linked list/tree (Java 8+: tree if > 8 entries).
+
+  Q: "TreeSet with a custom Comparator that returns 0 for two different objects?"
+  A: Those objects are considered EQUAL by TreeSet -- only one stored.
+     TreeSet uses compareTo()/compare() for equality, NOT equals().
+     This is a common bug: Comparator says equal, but equals() says not equal.
+```
+
+---
+
+## 3. Queue & Deque — PriorityQueue vs ArrayDeque vs LinkedList
+
+```
+  STRUCTURES:
+  ===========
+
+  Queue (FIFO):        head --> [1][2][3][4] --> tail
+                       offer() adds at tail, poll() removes from head
+
+  Deque (double-ended): head <-- [1][2][3][4] --> tail
+                        add/remove from BOTH ends
+
+  PriorityQueue:       Min-heap internally (binary heap array)
+                       poll() always returns SMALLEST element (natural order)
+                       NOT FIFO -- order by priority
+
+
+  COMPARISON TABLE:
+  =================
+
+  CLASS           Structure       Thread-safe   Null    Order       Use case
+  ────────────────────────────────────────────────────────────────────────────
+  PriorityQueue   Min-heap        No            No      Priority    Dijkstra, scheduling
+  ArrayDeque      Circular array  No            No      Insertion   Stack/Queue replacement
+  LinkedList      Doubly linked   No            YES     Insertion   Queue with nulls
+  ArrayBlockingQueue  Array       YES           No      Insertion   Producer-consumer
+  LinkedBlockingQueue Linked      YES           No      Insertion   Producer-consumer
+  PriorityBlockingQueue Heap      YES           No      Priority    Concurrent scheduling
+
+
+  INTERVIEW TRICK:
+  Q: "What is the best way to implement a Stack in Java?"
+  A: Deque<Integer> stack = new ArrayDeque<>();
+     stack.push(1);  // addFirst
+     stack.pop();    // removeFirst
+     DO NOT use java.util.Stack -- it extends Vector, synchronized on every method.
+     ArrayDeque is faster and the Java docs explicitly recommend it over Stack.
+
+  Q: "PriorityQueue iteration order?"
+  A: NOT sorted. Iteration order is undefined (heap array traversal).
+     Only poll()/peek() guarantees the minimum.
+     To iterate in sorted order: drain the queue with poll() or use TreeSet.
+
+  Q: "ArrayDeque vs LinkedList as a Queue?"
+  A: ArrayDeque is faster -- contiguous memory, better cache performance.
+     LinkedList allocates a node per element -- GC pressure.
+     LinkedList only wins if you need null elements in the queue.
+```
+
+---
+
+## 4. Map — The Deep Dive
+
+```
+  +-----------------------------------------------------------------------------------+
+  |                              MAP INTERNALS                                         |
+  +-----------------------------------------------------------------------------------+
+
+  HashMap INTERNAL STRUCTURE (Java 8+):
+  ======================================
+
+  Array of buckets (Node[]):
+  [0] --> null
+  [1] --> Node{hash,key,value,next} --> Node{...} --> null   (chain/collision)
+  [2] --> null
+  [3] --> TreeNode{...}  (converted to Red-Black Tree if bucket size > 8)
+  ...
+  [15]--> Node{...}
+
+  DEFAULT: initialCapacity=16, loadFactor=0.75
+  RESIZE:  when size > 16 * 0.75 = 12, doubles to 32 (rehashes all entries)
+
+  PUT OPERATION FLOW:
+  ===================
+  map.put("orderId", order)
+       |
+       | 1. hash = hash("orderId")  --> spread bits to reduce collisions
+       |    index = hash & (capacity-1)  --> bucket index
+       |
+       | 2. bucket[index] == null?
+       |       YES --> insert new Node there
+       |       NO  --> collision!
+       |              same key? (hash == && equals()) --> UPDATE value
+       |              different key?                  --> append to chain
+       |
+       | 3. chain length > 8?
+       |       YES --> convert linked list to Red-Black Tree (O(log n) lookup)
+       |
+       | 4. size > capacity * loadFactor?
+       |       YES --> resize (double capacity, rehash all entries)
+
+
+  COMPARISON TABLE (All Maps):
+  =============================
+
+  CLASS               Order           Null Key   Null Val   Thread-safe   Notes
+  ──────────────────────────────────────────────────────────────────────────────
+  HashMap             None            1 null     YES        No            Most used
+  LinkedHashMap       Insertion/LRU   1 null     YES        No            LRU cache
+  TreeMap             Sorted by key   No null    YES        No            Range queries
+  Hashtable           None            No null    No null    YES(sync)     Legacy, avoid
+  ConcurrentHashMap   None            No null    No null    YES           Production
+  EnumMap             Enum order      No null    YES        No            Enum keys only
+  WeakHashMap         None            1 null     YES        No            Cache (GC)
+  IdentityHashMap     None            allowed    YES        No            == not equals()
+
+
+  LINKEDHASHMAP — LRU CACHE:
+  ===========================
+  // accessOrder=true: most recently ACCESSED moves to end
+  // removeEldestEntry: called after each put, removes head when full
+  Map<String, Order> lruCache = new LinkedHashMap<>(16, 0.75f, true) {
+      @Override
+      protected boolean removeEldestEntry(Map.Entry<String, Order> eldest) {
+          return size() > 100;  // evict when more than 100 entries
+      }
+  };
+  // This is literally how many LRU cache interview questions are solved.
+
+
+  TREEMAP — RANGE QUERIES:
+  ========================
+  TreeMap<Integer, String> map = new TreeMap<>();
+  map.put(1, "one"); map.put(3, "three"); map.put(5, "five"); map.put(7, "seven");
+
+  map.firstKey()          --> 1
+  map.lastKey()           --> 7
+  map.headMap(5)          --> {1=one, 3=three}       (exclusive of 5)
+  map.tailMap(3)          --> {3=three, 5=five, 7=seven} (inclusive)
+  map.subMap(3, 6)        --> {3=three, 5=five}
+  map.floorKey(4)         --> 3 (largest key <= 4)
+  map.ceilingKey(4)       --> 5 (smallest key >= 4)
+
+
+  INTERVIEW TRICK:
+  Q: "Why does ConcurrentHashMap not allow null keys/values but HashMap does?"
+  A: In HashMap, map.get(key) returning null is AMBIGUOUS:
+       either the key doesn't exist OR the key maps to null value.
+     In single-threaded HashMap this is acceptable.
+     In ConcurrentHashMap, this ambiguity is DANGEROUS:
+       Thread-1: map.containsKey(k) --> true
+       [context switch]
+       Thread-2: map.remove(k)
+       Thread-1: map.get(k) --> null
+       Thread-1 cannot tell: "was it null, or was it removed?"
+     Doug Lea (ConcurrentHashMap author) intentionally banned null
+     to eliminate this race condition ambiguity.
+
+  Q: "HashMap vs Hashtable?"
+  A: Hashtable is legacy (Java 1.0), synchronized on every method (slow),
+     no null key/value, extends Dictionary (old hierarchy).
+     HashMap: not synchronized, allows 1 null key, many null values.
+     NEVER use Hashtable in new code. Use ConcurrentHashMap for thread safety.
+
+  Q: "What is the time complexity of HashMap.get()?"
+  A: O(1) average case.
+     O(n) worst case: all keys hash to same bucket (degenerate linked list).
+     O(log n) worst case with Java 8 treeification (> 8 entries per bucket).
+     Interviewers want to hear: "O(1) average, O(n) or O(log n) worst case."
+```
+
+---
+
+## 5. ConcurrentHashMap — Deep Dive
+
+```
+  JAVA 7 vs JAVA 8 INTERNALS:
+  ============================
+
+  Java 7: Segment-based locking
+  +──────────────────────────────────────────────+
+  | Segment[0] | Segment[1] | ... | Segment[15] |  16 segments (default)
+  +──────────────────────────────────────────────+
+  Each segment is a mini-HashMap with its own lock.
+  Threads in different segments run CONCURRENTLY.
+  concurrencyLevel=16 means 16 threads can write simultaneously.
+
+  Java 8: Node-level locking + CAS
+  +────────────────────────────────────────────────+
+  | Node[] table (like HashMap but with volatile)  |
+  +────────────────────────────────────────────────+
+  - Empty bucket: CAS (Compare-And-Swap) to insert -- NO lock
+  - Non-empty bucket: synchronized on that BUCKET HEAD only
+  - Read: completely lock-free (volatile reads)
+  - Much more concurrent than Java 7 segments
+
+
+  KEY METHODS:
+  ============
+  // Atomic check-and-insert -- avoids lost update race condition
+  map.putIfAbsent("key", value);
+  // equivalent but WRONG way:
+  if (!map.containsKey("key")) map.put("key", value);  // NOT atomic
+
+  // Atomic compute
+  map.compute("counter", (k, v) -> v == null ? 1 : v + 1);
+
+  // Atomic merge
+  map.merge("counter", 1, Integer::sum);
+  // if key absent: put 1. if present: apply sum function
+
+  // Bulk operations (Java 8)
+  map.forEach(2, (k, v) -> process(k, v));  // parallelism threshold=2
+  map.reduce(2, (k,v) -> v, Integer::sum);
+  map.search(2, (k,v) -> v > 100 ? v : null);
+
+  // Size is APPROXIMATE under concurrent modification
+  map.size()         // approximate
+  map.mappingCount() // more accurate (returns long)
+
+
+  INTERVIEW TRICK:
+  Q: "Is ConcurrentHashMap fully consistent under concurrent reads?"
+  A: NO. Reads are lock-free but may see stale data.
+     A read happening concurrently with a write may see old value.
+     It is EVENTUALLY CONSISTENT for reads.
+     Writes to the same bucket are strongly consistent (synchronized).
+
+  Q: "Can you iterate ConcurrentHashMap while another thread modifies it?"
+  A: YES -- it is fail-safe. Uses a snapshot-like approach.
+     Iterator will not throw ConcurrentModificationException.
+     But you may or may not see recently added/removed entries.
+```
+
+---
+
+## 6. equals() and hashCode() — The Contract
+
+```
+  THE CONTRACT (must follow BOTH):
+  =================================
+  1. If a.equals(b) is true  --> a.hashCode() == b.hashCode()  (MANDATORY)
+  2. If a.hashCode() == b.hashCode() --> a.equals(b) MAY be true or false (OK)
+  3. If !a.equals(b) --> hashCodes CAN be same (collision, allowed) or different
+
+  WHAT BREAKS IF YOU VIOLATE:
+  ============================
+  CASE 1: Override equals() but NOT hashCode()
+    class Order {
+        String id;
+        @Override
+        public boolean equals(Object o) {
+            return this.id.equals(((Order)o).id);
+        }
+        // NO hashCode override
+    }
+
+    Order o1 = new Order("ORD-1");
+    Order o2 = new Order("ORD-1");
+    o1.equals(o2)  --> true  (we defined it)
+
+    Set<Order> set = new HashSet<>();
+    set.add(o1);
+    set.contains(o2)  --> FALSE  <-- BUG
+    // Different hashCode --> different bucket --> set cannot find it
+    // Set now has duplicates despite equals() saying they're equal
+
+  CASE 2: Override hashCode() but NOT equals()
+    // Uses Object.equals() which is reference equality (==)
+    // Two "equal" objects (same data) treated as different by equals()
+    // HashMap stores both as separate entries -- duplicates
+
+  RULE:
+  Always override BOTH or NEITHER.
+  Lombok @EqualsAndHashCode does both correctly.
+  Java records generate both automatically.
+
+
+  GOOD hashCode PROPERTIES:
+  ==========================
+  1. Consistent: same object = same hashCode every run (in same JVM run)
+  2. Based on same fields as equals()
+  3. Well-distributed: minimize collisions
+  4. Fast to compute
+
+  // Java 7+ idiomatic hashCode:
+  @Override
+  public int hashCode() {
+      return Objects.hash(id, productId, customerId);
+  }
+
+  // Java records (Java 16+):
+  record Order(String id, String productId) {}
+  // equals() and hashCode() auto-generated based on all fields
+
+
+  INTERVIEW TRICK:
+  Q: "Can two objects with same hashCode be unequal?"
+  A: YES. This is called a hash collision. HashMap handles it via chaining.
+     hashCode() same + equals() false = same bucket, different entry.
+
+  Q: "Can two equal objects have different hashCodes?"
+  A: NO. This violates the contract. HashMap, HashSet, Hashtable all break.
+```
+
+---
+
+## 7. Comparable vs Comparator
+
+```
+  COMPARABLE (natural ordering -- built into the class):
+  =======================================================
+  public class Order implements Comparable<Order> {
+      private Double amount;
+
+      @Override
+      public int compareTo(Order other) {
+          return this.amount.compareTo(other.amount);
+          // negative --> this < other
+          // zero     --> this == other
+          // positive --> this > other
+      }
+  }
+
+  // Usage -- no extra comparator needed:
+  List<Order> orders = new ArrayList<>();
+  Collections.sort(orders);              // uses compareTo()
+  TreeSet<Order> sorted = new TreeSet<>(orders);
+
+
+  COMPARATOR (external ordering -- defined outside the class):
+  =============================================================
+  // Java 8+ style:
+  Comparator<Order> byAmount  = Comparator.comparing(Order::getAmount);
+  Comparator<Order> byAmountDesc = Comparator.comparing(Order::getAmount).reversed();
+
+  // chained:
+  Comparator<Order> byAmountThenId =
+      Comparator.comparing(Order::getAmount)
+                .thenComparing(Order::getId);
+
+  // null-safe:
+  Comparator<Order> nullSafe =
+      Comparator.comparing(Order::getAmount, Comparator.nullsLast(Comparator.naturalOrder()));
+
+  // Usage:
+  orders.sort(byAmountDesc);
+  TreeSet<Order> set = new TreeSet<>(byAmount);
+
+
+  WHEN TO USE WHICH:
+  ==================
+  Comparable  --> "natural" ordering for the class (one ordering makes sense)
+                  e.g. String (alphabetical), Integer (numeric), LocalDate (chronological)
+
+  Comparator  --> multiple different orderings needed
+                  class you don't own (can't modify source)
+                  ordering changes at runtime
+
+
+  INTERVIEW TRICK:
+  Q: "TreeSet uses equals() for uniqueness -- true or false?"
+  A: FALSE. TreeSet uses compareTo() or compare() for ALL operations.
+     If compareTo() returns 0, TreeSet considers objects EQUAL
+     even if equals() returns false.
+     This causes a famous bug:
+     TreeSet<String> set = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+     set.add("Hello");
+     set.add("hello");   // comparator returns 0 --> treated as duplicate
+     set.size() --> 1    // even though "Hello".equals("hello") is false
+
+  Q: "Sort a list by length, then alphabetically for same length?"
+  A: list.sort(Comparator.comparingInt(String::length).thenComparing(Comparator.naturalOrder()));
+```
+
+---
+
+## 8. Fail-Fast vs Fail-Safe Iterators
+
+```
+  FAIL-FAST:
+  ==========
+  ArrayList<String> list = new ArrayList<>(Arrays.asList("a","b","c"));
+  Iterator<String> it = list.iterator();
+
+  while (it.hasNext()) {
+      String s = it.next();
+      list.add("d");            // modifying list during iteration
+  }
+  // throws ConcurrentModificationException immediately
+
+  HOW: ArrayList tracks modCount (modification count).
+       Iterator captures expectedModCount at creation.
+       On each next(), checks: modCount == expectedModCount?
+       If not --> throw ConcurrentModificationException.
+
+  SAFE WAY to remove during iteration:
+  while (it.hasNext()) {
+      String s = it.next();
+      if (s.equals("b")) it.remove();  // use iterator's remove(), not list.remove()
+  }
+  // or Java 8+:
+  list.removeIf(s -> s.equals("b"));
+
+
+  FAIL-SAFE:
+  ==========
+  CopyOnWriteArrayList<String> list = new CopyOnWriteArrayList<>(Arrays.asList("a","b","c"));
+  for (String s : list) {
+      list.add("d");   // modifies a COPY -- no exception
+  }
+  // iteration sees original [a,b,c], modification goes to new copy
+
+
+  FAIL-SAFE collections:
+  ConcurrentHashMap, CopyOnWriteArrayList, CopyOnWriteArraySet
+
+  INTERVIEW TRICK:
+  Q: "Does ConcurrentHashMap iterator throw ConcurrentModificationException?"
+  A: No. It is weakly consistent -- fail-safe.
+     It reflects the state of the map at some point during iteration.
+     May or may not reflect changes made after iterator creation.
+
+  Q: "How to remove elements from HashMap while iterating?"
+  A: Use entrySet().iterator() and iterator.remove():
+     Iterator<Map.Entry<K,V>> it = map.entrySet().iterator();
+     while (it.hasNext()) {
+         Map.Entry<K,V> entry = it.next();
+         if (condition) it.remove();  // safe
+     }
+     // Or Java 8+:
+     map.entrySet().removeIf(e -> condition);
+```
+
+---
+
+## 9. Collections Utility Class — Tricky Methods
+
+```java
+// ── Unmodifiable views ────────────────────────────────────────────────
+List<String> list = new ArrayList<>(Arrays.asList("a","b","c"));
+List<String> unmod = Collections.unmodifiableList(list);
+unmod.add("d");   // throws UnsupportedOperationException
+
+// TRICK: unmodifiableList is a VIEW, not a copy
+list.add("d");    // modifying original DOES affect unmod view
+// unmod now shows [a,b,c,d] -- it is NOT truly immutable
+
+// Truly immutable: List.of() (Java 9+)
+List<String> immutable = List.of("a", "b", "c");
+// - No null elements allowed
+// - Fixed size, no add/remove
+// - Not backed by any mutable list
+
+
+// ── Sorting & Searching ───────────────────────────────────────────────
+Collections.sort(list);                    // natural order, modifies list
+Collections.sort(list, comparator);        // custom order
+Collections.binarySearch(list, "b");       // O(log n) -- list MUST be sorted
+Collections.reverse(list);
+Collections.shuffle(list);
+Collections.shuffle(list, new Random(42)); // seeded -- reproducible
+
+
+// ── Min / Max ────────────────────────────────────────────────────────
+String min = Collections.min(list);
+String max = Collections.max(list, Comparator.comparingInt(String::length));
+
+
+// ── Frequency & Disjoint ─────────────────────────────────────────────
+Collections.frequency(list, "a");          // count occurrences
+Collections.disjoint(list1, list2);        // true if NO common elements
+
+
+// ── Synchronized wrappers ────────────────────────────────────────────
+List<String> syncList = Collections.synchronizedList(new ArrayList<>());
+// Still need external sync during iteration:
+synchronized (syncList) {
+    for (String s : syncList) { ... }  // must sync manually during iteration
+}
+// CopyOnWriteArrayList is better for read-heavy concurrent use
+
+
+// ── nCopies & fill ───────────────────────────────────────────────────
+List<String> copies = Collections.nCopies(5, "hello");
+// [hello, hello, hello, hello, hello] -- unmodifiable
+
+Collections.fill(list, "x");   // replaces all elements with "x"
+
+
+// ── INTERVIEW TRICK ────────────────────────────────────────────────────
+// Q: "List.of() vs Arrays.asList() vs new ArrayList()?"
+
+// Arrays.asList():
+List<String> a = Arrays.asList("x", "y", "z");
+a.set(0, "NEW");   // OK -- can modify elements
+a.add("w");        // UnsupportedOperationException -- fixed size
+// Backed by array -- structural changes (add/remove) not allowed
+// Allows null elements
+
+// List.of() (Java 9+):
+List<String> b = List.of("x", "y", "z");
+b.set(0, "NEW");   // UnsupportedOperationException
+b.add("w");        // UnsupportedOperationException
+// Truly immutable, null NOT allowed, not backed by array
+
+// new ArrayList<>(Arrays.asList(...)):
+List<String> c = new ArrayList<>(Arrays.asList("x","y","z"));
+c.add("w");        // OK -- fully mutable
+c.set(0, "NEW");   // OK
+```
+
+---
+
+## 10. Java 8+ Collection Operations
+
+```java
+// ── forEach ──────────────────────────────────────────────────────────
+list.forEach(System.out::println);
+map.forEach((k, v) -> System.out.println(k + "=" + v));
+
+
+// ── Map compute methods (atomic in ConcurrentHashMap) ─────────────────
+Map<String, Integer> freq = new HashMap<>();
+
+// compute: always computes new value
+freq.compute("apple", (k, v) -> v == null ? 1 : v + 1);
+
+// computeIfAbsent: only compute if key absent (good for default values)
+freq.computeIfAbsent("banana", k -> 0);
+
+// computeIfPresent: only compute if key present
+freq.computeIfPresent("apple", (k, v) -> v * 2);
+
+// merge: combine old and new value with a function
+freq.merge("apple", 1, Integer::sum);
+// if "apple" absent: put 1
+// if "apple" present: apply Integer::sum(oldVal, 1)
+
+// getOrDefault: safe get with fallback
+int count = freq.getOrDefault("cherry", 0);
+
+// putIfAbsent: only insert if key not present (atomic in CHM)
+freq.putIfAbsent("date", 1);
+
+
+// ── removeIf (List, Set) ──────────────────────────────────────────────
+list.removeIf(s -> s.startsWith("A"));   // cleaner than iterator.remove()
+
+
+// ── replaceAll ────────────────────────────────────────────────────────
+list.replaceAll(String::toUpperCase);    // replaces each element in-place
+map.replaceAll((k, v) -> v * 2);         // replaces each value in-place
+
+
+// ── INTERVIEW TRICK ────────────────────────────────────────────────────
+// Q: "Word frequency count in one line?"
+String text = "apple banana apple cherry banana apple";
+Map<String, Long> wordCount = Arrays.stream(text.split(" "))
+    .collect(Collectors.groupingBy(w -> w, Collectors.counting()));
+// {apple=3, banana=2, cherry=1}
+
+// Q: "Group orders by status?"
+Map<OrderStatus, List<Order>> byStatus =
+    orders.stream().collect(Collectors.groupingBy(Order::getStatus));
+
+// Q: "Top 3 most expensive orders?"
+orders.stream()
+    .sorted(Comparator.comparing(Order::getAmount).reversed())
+    .limit(3)
+    .collect(Collectors.toList());
+```
+
+---
+
+## Interview Tricky Q&A — Collections
+
+---
+
+**Q1. HashMap internal working — what happens when two keys have the same hashCode?**
+
+```
+ANSWER:
+=======
+This is called a HASH COLLISION. HashMap handles it via CHAINING.
+
+PUT flow when collision:
+  1. Compute bucket: index = hash(key) & (capacity - 1)
+  2. Bucket not empty --> traverse the chain
+  3. Found node with same hash AND equals() true --> UPDATE value
+  4. No match found --> APPEND new Node at chain end
+
+Java 7:  always linked list in bucket (O(n) worst case for get)
+Java 8:  linked list converts to Red-Black Tree when chain length > 8
+          (TREEIFY_THRESHOLD = 8) --> O(log n) worst case
+         Converts back to list when < 6 entries (UNTREEIFY_THRESHOLD = 6)
+
+INTERVIEW FOLLOW-UP:
+Q: "What is the worst case for HashMap.get()?"
+A: All keys hash to same bucket.
+   Java 7: O(n) -- full chain traversal
+   Java 8: O(log n) -- treeified bucket (if all keys implement Comparable)
+           O(n) if keys don't implement Comparable (can't treeify)
+
+Q: "Why does HashMap capacity double and always stay power of 2?"
+A: index = hash & (capacity - 1)
+   For power-of-2 capacity, this is a fast BITMASK operation (no modulo).
+   Also, doubling allows rehashing with a single bit check:
+   new_index = old_index OR old_capacity (no full rehash needed).
+```
+
+---
+
+**Q2. What is the difference between Collections.sort() and List.sort()? And Arrays.sort()?**
+
+```
+ANSWER:
+=======
+Collections.sort(list)     --> delegates to list.sort() since Java 8
+                                effectively the same
+
+list.sort(comparator)      --> calls Arrays.sort() on the underlying array
+                                TimSort algorithm
+                                O(n log n), stable sort
+
+Arrays.sort(primitiveArr)  --> Dual-Pivot Quicksort (NOT stable)
+                                O(n log n) average, O(n²) worst
+                                Faster than TimSort for primitives
+
+Arrays.sort(objectArr)     --> TimSort (same as List.sort)
+                                Stable: equal elements maintain original order
+
+WHY TIMORT?
+  TimSort is a hybrid: MergeSort + InsertionSort
+  Exploits natural runs (already-sorted subsequences) in real data
+  Best case O(n) for already-sorted data
+  Always O(n log n) worst case (unlike Quicksort's O(n²))
+
+INTERVIEW TRICK:
+Q: "Is Collections.sort() stable?"
+A: YES. TimSort is stable -- equal elements maintain their relative order.
+   Arrays.sort() for primitives (Dual-Pivot QuickSort) is NOT stable.
+   Arrays.sort() for objects (TimSort) IS stable.
+```
+
+---
+
+**Q3. You have a HashMap with 1 million entries. What is the memory impact of increasing loadFactor from 0.75 to 0.9?**
+
+```
+ANSWER:
+=======
+loadFactor controls when HashMap resizes (doubles its internal array).
+
+loadFactor = 0.75 (default):
+  Resize when 75% full.
+  1 million entries: internal array size ≈ 1,048,576 (next power of 2 > 1M/0.75)
+  More resizes happen, more memory wasted in empty buckets.
+  But fewer collisions (buckets stay sparse).
+
+loadFactor = 0.9:
+  Resize when 90% full.
+  1 million entries: smaller internal array needed.
+  LESS memory used (fewer empty buckets).
+  MORE collisions (buckets denser).
+  Slower get/put (longer chains).
+
+TRADEOFF:
+  Higher loadFactor --> less memory, more collisions, slower
+  Lower loadFactor  --> more memory, fewer collisions, faster
+
+DEFAULT 0.75 is empirically chosen as best balance.
+
+WHEN TO TUNE:
+  Memory-constrained: increase to 0.9 (accept slower access)
+  Performance-critical: decrease to 0.5 (accept more memory)
+  Known size upfront: new HashMap<>(expectedSize, 0.75f) -- avoid resize entirely
+
+INTERVIEW TIP: mention that resize is O(n) -- rehashes every entry.
+  Pre-sizing avoids this: new HashMap<>((int)(expectedSize / 0.75) + 1)
+```
+
+---
+
+**Q4. What is the difference between Iterator, ListIterator, and Spliterator?**
+
+```
+ANSWER:
+=======
+
+Iterator:
+  - Forward only (next(), hasNext())
+  - Can remove current element (remove())
+  - Works on any Collection
+  - Single-threaded traversal
+
+ListIterator (extends Iterator):
+  - Bidirectional (next(), previous(), hasNext(), hasPrevious())
+  - Can add, set, or remove during iteration
+  - Has nextIndex(), previousIndex()
+  - Only for List (not Set, not Map)
+
+Spliterator (Java 8+):
+  - Designed for PARALLEL iteration (used by Stream API internally)
+  - Can SPLIT itself into two halves for parallel processing
+  - trySplit() -- splits off a portion for another thread
+  - tryAdvance() -- process one element
+  - forEachRemaining() -- process all remaining
+  - Has characteristics: ORDERED, DISTINCT, SORTED, SIZED, NONNULL, IMMUTABLE
+
+EXAMPLE:
+  Spliterator<String> sp1 = list.spliterator();
+  Spliterator<String> sp2 = sp1.trySplit();  // sp2 gets first half
+  // sp1 and sp2 can now be processed in parallel
+
+INTERVIEW TRICK:
+Q: "How does Stream.parallel() work internally?"
+A: Uses Spliterator to split the data source into chunks.
+   Each chunk processed by a thread in ForkJoinPool.commonPool().
+   Spliterator.trySplit() is called recursively until chunks are small enough.
+```
+
+---
+
+**Q5. What is the difference between poll() and remove() in Queue?**
+
+```
+ANSWER:
+=======
+
+              Queue EMPTY        Queue NOT EMPTY
+              ──────────────────────────────────
+poll()    --> returns null        returns & removes head
+remove()  --> throws              returns & removes head
+              NoSuchElementException
+
+              Queue EMPTY        Queue NOT EMPTY
+peek()    --> returns null        returns head (no remove)
+element() --> throws              returns head (no remove)
+              NoSuchElementException
+
+MEMORY AID:
+  poll/peek  --> "safe" versions  (return null on empty)
+  remove/element --> "throwing" versions (exception on empty)
+
+SAME PATTERN IN DEQUE:
+  offerFirst/offerLast --> safe add to front/end
+  addFirst/addLast     --> throw if capacity exceeded
+  pollFirst/pollLast   --> safe remove from front/end
+  removeFirst/removeLast --> throw if empty
+  peekFirst/peekLast   --> safe peek
+  getFirst/getLast     --> throw if empty
+
+INTERVIEW TRICK:
+Q: "Which Queue methods should you prefer in production?"
+A: poll() and peek() -- they never throw exceptions.
+   In production, prefer methods that return null over ones that throw,
+   so you handle empty queue cases explicitly rather than catching exceptions.
+   Use remove()/element() only when empty queue is truly an error condition.
+```
+
+---
+
+## Quick-Fire Interview Questions
+
+```
+  Q: "What is the initial capacity of ArrayList, HashMap, HashSet?"
+  A: ArrayList --> 10
+     HashMap   --> 16 (loadFactor 0.75, resize at 12 entries)
+     HashSet   --> 16 (backed by HashMap)
+
+  Q: "Is HashMap ordered?"
+  A: No. Use LinkedHashMap for insertion order, TreeMap for sorted order.
+
+  Q: "Can you store null in TreeMap?"
+  A: No null KEYS (NullPointerException on compareTo(null)).
+     Null VALUES are allowed.
+
+  Q: "What happens if hashCode() always returns same value (e.g. return 1)?"
+  A: All entries go to same bucket. HashMap degrades to a linked list.
+     O(1) get/put becomes O(n). This is a classic HashMap DoS attack.
+     Java 8 mitigates with treeification but still O(log n) not O(1).
+
+  Q: "EnumMap vs HashMap with enum keys?"
+  A: EnumMap uses array internally indexed by enum ordinal.
+     O(1) guaranteed with zero collision. No hashing needed.
+     Faster and less memory than HashMap. Always use EnumMap for enum keys.
+
+  Q: "WeakHashMap use case?"
+  A: Cache where entries should be GC'd when the KEY has no other references.
+     E.g.: class metadata cache -- when the Class object is unloaded,
+     the cache entry disappears automatically. No manual cleanup needed.
+
+  Q: "Difference between Stack and Deque as stack?"
+  A: java.util.Stack extends Vector -- synchronized on every method, slow.
+     Deque (ArrayDeque) -- not synchronized, faster, recommended by Java docs.
+     Stack.push() == Deque.push() (addFirst)
+     Stack.pop()  == Deque.pop()  (removeFirst)
+
+  Q: "ConcurrentHashMap.size() is unreliable -- why?"
+  A: Under concurrent modification, size() returns an estimate.
+     One thread may be adding while another is removing.
+     Use mappingCount() for a more accurate long count.
+     Even mappingCount() is a snapshot -- not a guarantee.
+
+  Q: "Collections.emptyList() vs new ArrayList() -- difference?"
+  A: emptyList() returns a SINGLETON immutable empty list (no allocation).
+     Same instance returned every time -- memory efficient.
+     new ArrayList() allocates a new object each time.
+     Use emptyList() for return values when you have nothing to return.
+
+  Q: "List.copyOf() vs new ArrayList(original)?"
+  A: List.copyOf() -- immutable copy, null not allowed, compact representation.
+     new ArrayList(original) -- mutable copy, nulls allowed, full ArrayList overhead.
+     List.copyOf() is faster and uses less memory for read-only use cases.
+```
+
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>
