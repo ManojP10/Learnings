@@ -1,0 +1,227 @@
+# Why ConcurrentHashMap Doesn't Allow null — But HashMap Does
+
+---
+
+## The Core Reason in One Line
+
+> In a concurrent environment, you **cannot distinguish** between "key not present" and "key mapped to null" — without locking the entire map. HashMap doesn't have this problem because it's single-threaded.
+
+---
+
+## Understanding the Problem — Step by Step
+
+### In HashMap (single-threaded) — null is safe
+
+```java
+HashMap<String, String> map = new HashMap<>();
+map.put("city", null);          // null value stored
+
+String val = map.get("city");   // returns null
+
+// You can safely disambiguate:
+if (map.containsKey("city")) {
+    // key EXISTS, value happens to be null
+} else {
+    // key does NOT exist
+}
+```
+
+This works because the entire operation is **single-threaded**. Between `get()` and `containsKey()`, **nothing can change the map**. The two-step check is safe.
+
+---
+
+### In ConcurrentHashMap (multi-threaded) — null breaks everything
+
+```java
+ConcurrentHashMap<String, String> map = new ConcurrentHashMap<>();
+
+// Thread A does this:
+String val = map.get("city");   // returns null
+
+// val is null — but WHY?
+// Possibility 1: key "city" doesn't exist in the map
+// Possibility 2: key "city" exists but its value is null
+// → YOU CANNOT TELL THE DIFFERENCE
+
+// Thread A tries to disambiguate:
+if (map.containsKey("city")) {   // ← Thread B could INSERT or REMOVE
+    // "city" here                  "city" RIGHT HERE between get() and
+} else {                           containsKey() — making this check WRONG
+    // "city" not here
+}
+```
+
+The check is no longer atomic. Another thread can **modify the map between your two calls**.
+
+---
+
+## The Race Condition Visualized
+
+```
+Thread A                              Thread B
+────────                              ────────
+val = map.get("city")
+  → returns null
+                                      map.remove("city")
+                                      OR
+                                      map.put("city", "Bangalore")
+
+if (map.containsKey("city"))
+  → result is now WRONG
+    because map changed between
+    get() and containsKey()
+```
+
+Even if you tried to handle null by doing `containsKey()` after `get()`, the result is **stale** by the time you check it. This is called a **Time-of-Check to Time-of-Use (TOCTOU) race condition**.
+
+---
+
+## What Doug Lea (the Author) Said
+
+Doug Lea, who designed `ConcurrentHashMap`, explicitly stated:
+
+> "The main reason null isn't allowed in ConcurrentHashMap is that ambiguities that may be just barely tolerable in non-concurrent maps can't be accommodated. If null were allowed, if `map.get(key)` returns null, you can't detect whether the key explicitly maps to null or the map contains no mapping for the key."
+
+In a single-threaded map, you tolerate the ambiguity by doing a follow-up `containsKey()`. In a concurrent map, that follow-up check is **inherently unreliable**.
+
+---
+
+## Internal Structure — Why HashMap Can Afford It
+
+```java
+// HashMap internal node — null key stored at index 0 by design
+static final int hash(Object key) {
+    int h;
+    return (key == null) ? 0 : (h = key.hashCode()) ^ (h >>> 16);
+    //      ↑ null key explicitly handled — goes to bucket 0
+}
+
+// HashMap.get() — can return null for two reasons
+public V get(Object key) {
+    Node<K,V> e;
+    return (e = getNode(hash(key), key)) == null
+        ? null          // ← reason 1: key not found
+        : e.value;      // ← reason 2: key found but value is null
+    // single-threaded: caller can safely do containsKey() next
+}
+```
+
+```java
+// ConcurrentHashMap.get() — null return has only ONE meaning: not found
+public V get(Object key) {
+    // key null check — throws NullPointerException immediately
+    if (key == null) throw new NullPointerException();
+
+    // ... lookup logic
+    return (node found) ? node.value : null;
+    // null means ONLY: key not present. Value can never be null.
+}
+```
+
+---
+
+## The Fail-Fast Design Philosophy
+
+`ConcurrentHashMap` was designed with **fail-fast, unambiguous semantics**:
+
+```
+HashMap contract:
+  get(key) → null means "not found" OR "found but value is null"
+  → ambiguous, but OK in single-threaded context
+
+ConcurrentHashMap contract:
+  get(key) → null means ONLY "not found"
+  → unambiguous, safe in concurrent context
+  → if you need "null value", use a sentinel instead
+```
+
+---
+
+## The Sentinel Pattern — How to Store "null" in ConcurrentHashMap
+
+Since you can't store actual null, use a **sentinel object** to represent the concept of null:
+
+```java
+public class ConcurrentMapWithNull<K, V> {
+
+    // sentinel — a placeholder that means "the value is intentionally null"
+    private static final Object NULL_SENTINEL = new Object();
+
+    private final ConcurrentHashMap<K, Object> map = new ConcurrentHashMap<>();
+
+    @SuppressWarnings("unchecked")
+    public void put(K key, V value) {
+        map.put(key, value == null ? NULL_SENTINEL : value);
+        //                ↑ replace null with sentinel before storing
+    }
+
+    @SuppressWarnings("unchecked")
+    public V get(K key) {
+        Object val = map.get(key);
+        if (val == NULL_SENTINEL) return null;   // decode sentinel back to null
+        return (V) val;
+    }
+
+    public boolean containsKey(K key) {
+        return map.containsKey(key);
+    }
+}
+
+// Usage
+ConcurrentMapWithNull<String, String> map = new ConcurrentMapWithNull<>();
+map.put("city", null);            // stores sentinel internally
+map.get("city");                  // returns null (decoded from sentinel)
+map.containsKey("city");          // true
+```
+
+---
+
+## Or Use Optional as Value Type
+
+```java
+ConcurrentHashMap<String, Optional<String>> map = new ConcurrentHashMap<>();
+
+// Store a "null" value
+map.put("city", Optional.empty());
+
+// Retrieve
+Optional<String> result = map.get("city");
+if (result == null) {
+    System.out.println("Key does not exist");
+} else if (result.isEmpty()) {
+    System.out.println("Key exists, value is null");
+} else {
+    System.out.println("Value: " + result.get());
+}
+```
+
+---
+
+## Side-by-Side Comparison
+
+```
+┌──────────────────────┬──────────────────────┬──────────────────────────┐
+│                      │ HashMap              │ ConcurrentHashMap        │
+├──────────────────────┼──────────────────────┼──────────────────────────┤
+│ Null key             │ One null key allowed │ Not allowed → NPE        │
+├──────────────────────┼──────────────────────┼──────────────────────────┤
+│ Null value           │ Allowed              │ Not allowed → NPE        │
+├──────────────────────┼──────────────────────┼──────────────────────────┤
+│ Thread-safe          │ No                   │ Yes                      │
+├──────────────────────┼──────────────────────┼──────────────────────────┤
+│ get() returns null   │ Not found OR         │ Only means not found     │
+│                      │ value is null        │ (unambiguous)            │
+├──────────────────────┼──────────────────────┼──────────────────────────┤
+│ containsKey() after  │ Safe — map can't     │ Unsafe — map can change  │
+│ get() check          │ change between calls │ between the two calls    │
+├──────────────────────┼──────────────────────┼──────────────────────────┤
+│ Design intent        │ Tolerates ambiguity  │ Fails fast on ambiguity  │
+└──────────────────────┴──────────────────────┴──────────────────────────┘
+```
+
+---
+
+## The One-Line Memory Hook
+
+> HashMap is **single-threaded** — you can double-check safely.
+> ConcurrentHashMap is **multi-threaded** — by the time you double-check, the world has changed.
