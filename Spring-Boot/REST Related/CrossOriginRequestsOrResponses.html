@@ -23,7 +23,430 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Cross-Origin Requests (CORS) in Spring Boot & Microservices
 
+---
+
+## What is CORS and Why Does It Exist?
+
+Browsers enforce the **Same-Origin Policy** — a security rule that blocks a web page from making requests to a **different origin** than the one that served it.
+
+**Origin = Protocol + Domain + Port**
+
+```
+https://myapp.com:443  ──► https://myapp.com:443/api    ✅ Same origin
+https://myapp.com:443  ──► https://api.myapp.com/users  ❌ Different subdomain
+https://myapp.com:443  ──► http://myapp.com/users        ❌ Different protocol
+https://myapp.com:443  ──► https://myapp.com:8080/users  ❌ Different port
+https://myapp.com:443  ──► https://other.com/users       ❌ Different domain
+```
+
+CORS (Cross-Origin Resource Sharing) is the mechanism that lets a **server tell the browser** — "yes, I trust requests from that other origin."
+
+> Note: CORS is **browser-enforced only**. Postman, curl, service-to-service calls — none of them are blocked by CORS. It's purely a browser security feature.
+
+---
+
+## How CORS Works — The Full HTTP Flow
+
+### Simple Request Flow
+
+```
+Browser (myapp.com)                    Server (api.com)
+        │                                     │
+        │  GET /api/users                     │
+        │  Origin: https://myapp.com  ──────► │
+        │                                     │
+        │ ◄────────────────────────────────── │
+        │  Access-Control-Allow-Origin:        │
+        │    https://myapp.com                │
+        │                                     │
+   Browser checks header ──► allowed ──► JS gets response
+```
+
+### Preflight Request Flow (for non-simple requests)
+
+For `POST/PUT/DELETE` with JSON body, or custom headers — browser sends an **OPTIONS preflight first**:
+
+```
+Browser (myapp.com)                    Server (api.com)
+        │                                     │
+        │  OPTIONS /api/users                 │
+        │  Origin: https://myapp.com          │
+        │  Access-Control-Request-Method: POST│
+        │  Access-Control-Request-Headers:    │
+        │    Content-Type, Authorization ───► │
+        │                                     │
+        │ ◄────────────────────────────────── │
+        │  Access-Control-Allow-Origin: ...   │
+        │  Access-Control-Allow-Methods: ...  │
+        │  Access-Control-Allow-Headers: ...  │
+        │  Access-Control-Max-Age: 3600       │
+        │                                     │
+   Preflight passed ──► actual POST sent
+        │                                     │
+        │  POST /api/users                    │
+        │  Origin: https://myapp.com  ──────► │
+        │                                     │
+        │ ◄────────────────────────────────── │
+        │  200 OK + response body             │
+```
+
+`Access-Control-Max-Age` caches the preflight result so browser doesn't repeat OPTIONS for every call.
+
+---
+
+## Way 1: `@CrossOrigin` on Controller / Method
+
+Quickest way. Fine for single controller.
+
+```java
+// On entire controller
+@RestController
+@RequestMapping("/api/v1/users")
+@CrossOrigin(
+    origins = {"https://myapp.com", "https://admin.myapp.com"},
+    methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE},
+    allowedHeaders = {"Content-Type", "Authorization"},
+    allowCredentials = "true",
+    maxAge = 3600
+)
+public class UserController {
+
+    @GetMapping("/{id}")
+    public UserResponse getUser(@PathVariable Long id) { ... }
+
+    @PostMapping
+    public UserResponse createUser(@RequestBody CreateUserRequest request) { ... }
+}
+```
+
+```java
+// On specific method only
+@RestController
+@RequestMapping("/api/v1/products")
+public class ProductController {
+
+    @GetMapping("/public")
+    @CrossOrigin(origins = "*")        // public endpoint — allow all origins
+    public List<ProductResponse> getPublicProducts() { ... }
+
+    @PostMapping                        // no @CrossOrigin — uses global config
+    public ProductResponse createProduct(@RequestBody CreateProductRequest request) { ... }
+}
+```
+
+**Problem:** If you have 20 controllers, you repeat this on all 20. Not maintainable.
+
+---
+
+## Way 2: Global CORS Config via `WebMvcConfigurer`
+
+One place, applies to all controllers. This is the standard approach.
+
+```java
+@Configuration
+public class CorsConfig implements WebMvcConfigurer {
+
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+
+        registry.addMapping("/api/**")            // applies to all /api/* routes
+                .allowedOrigins(
+                    "https://myapp.com",
+                    "https://admin.myapp.com",
+                    "http://localhost:3000"       // for local dev
+                )
+                .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
+                .allowedHeaders("Content-Type", "Authorization", "X-API-Version")
+                .exposedHeaders("X-Total-Count", "X-Request-Id")  // headers JS can read
+                .allowCredentials(true)           // allow cookies / auth headers
+                .maxAge(3600);                    // cache preflight for 1 hour
+
+        // separate rule for public endpoints
+        registry.addMapping("/api/v1/public/**")
+                .allowedOrigins("*")              // wildcard — no credentials here
+                .allowedMethods("GET")
+                .maxAge(3600);
+    }
+}
+```
+
+> **Important:** `allowedOrigins("*")` and `allowCredentials(true)` cannot be combined — browser rejects it. Wildcard only works for public, cookieless endpoints.
+
+---
+
+## Way 3: CORS via `CorsFilter` Bean (Most Flexible)
+
+Unlike `WebMvcConfigurer`, this works **at the servlet filter level** — before Spring Security, before anything else. Essential when you have Spring Security.
+
+```java
+@Configuration
+public class CorsFilterConfig {
+
+    @Bean
+    public CorsFilter corsFilter() {
+        CorsConfiguration config = new CorsConfiguration();
+
+        config.setAllowedOrigins(List.of(
+            "https://myapp.com",
+            "https://admin.myapp.com",
+            "http://localhost:3000"
+        ));
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
+        config.setAllowedHeaders(List.of("*"));        // allow all headers
+        config.setExposedHeaders(List.of("Authorization", "X-Total-Count"));
+        config.setAllowCredentials(true);
+        config.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/api/**", config);   // apply to /api/**
+
+        return new CorsFilter(source);
+    }
+}
+```
+
+---
+
+## Way 4: CORS with Spring Security
+
+If you use Spring Security, it intercepts requests **before** `WebMvcConfigurer` CORS config runs. You must configure CORS inside the security filter chain too.
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            //  ^^^^ tell Spring Security to use your CORS config
+
+            .csrf(csrf -> csrf.disable())
+
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/v1/public/**").permitAll()
+                .anyRequest().authenticated()
+            )
+
+            .sessionManagement(session -> session
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            );
+
+        return http.build();
+    }
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration config = new CorsConfiguration();
+        config.setAllowedOrigins(List.of(
+            "https://myapp.com",
+            "http://localhost:3000"
+        ));
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-API-Version"));
+        config.setExposedHeaders(List.of("Authorization"));
+        config.setAllowCredentials(true);
+        config.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", config);
+        return source;
+    }
+}
+```
+
+---
+
+## How Spring Applies Multiple CORS Configs
+
+When you have `@CrossOrigin` + global config, Spring **merges** them:
+
+```
+@CrossOrigin on method        ──┐
+                                ├──► merged config applied to this request
+Global WebMvcConfigurer config ──┘
+```
+
+Method-level `@CrossOrigin` overrides global config for that specific endpoint.
+
+---
+
+## CORS in Microservices — Where Does It Live?
+
+In a microservice architecture, you have two choices:
+
+```
+                    ┌─────────────────────────────────────┐
+  Browser           │           API Gateway               │
+    │               │                                     │
+    │──── request ─►│  CORS handled HERE  ◄─── Option A  │
+    │               │         │                           │
+    │               │    ┌────┴──────────────────┐        │
+    │               │    │  Route to services    │        │
+    │               │    └────┬──────────────────┘        │
+    │               └─────── │ ──────────────────────────-┘
+    │                         │
+    │                ┌────────┼────────────────────┐
+    │                ▼        ▼                    ▼
+    │           User-Service  Order-Service   Product-Service
+    │           (no CORS)     (no CORS)       (no CORS)
+    │
+    │  ─── Option B: Each service handles its own CORS
+```
+
+### Option A: Gateway-level CORS (Recommended)
+
+Handle CORS once at the **Spring Cloud Gateway**. Individual services don't need CORS config.
+
+```yaml
+# Spring Cloud Gateway - application.yml
+spring:
+  cloud:
+    gateway:
+      globalcors:
+        corsConfigurations:
+          '[/**]':                             # apply to all routes
+            allowedOrigins:
+              - "https://myapp.com"
+              - "http://localhost:3000"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders:
+              - "*"
+            allowCredentials: true
+            maxAge: 3600
+```
+
+Or in Java config for the gateway:
+
+```java
+@Configuration
+public class GatewayCorsConfig {
+
+    @Bean
+    public GlobalFilter corsGlobalFilter() {
+        return (exchange, chain) -> {
+            ServerHttpRequest request   = exchange.getRequest();
+            ServerHttpResponse response = exchange.getResponse();
+
+            response.getHeaders().add("Access-Control-Allow-Origin", "https://myapp.com");
+            response.getHeaders().add("Access-Control-Allow-Methods",
+                                      "GET, POST, PUT, DELETE, OPTIONS");
+            response.getHeaders().add("Access-Control-Allow-Headers",
+                                      "Content-Type, Authorization");
+            response.getHeaders().add("Access-Control-Allow-Credentials", "true");
+
+            // handle preflight
+            if (request.getMethod() == HttpMethod.OPTIONS) {
+                response.setStatusCode(HttpStatus.OK);
+                return Mono.empty();
+            }
+
+            return chain.filter(exchange);
+        };
+    }
+}
+```
+
+### Option B: Per-service CORS (use only when services are directly exposed)
+
+Each service has its own `WebMvcConfigurer`. Useful when services are accessed directly without a gateway.
+
+---
+
+## Environment-Specific Origins (Dev vs Prod)
+
+Never hardcode origins. Use profiles:
+
+```yaml
+# application-dev.yml
+cors:
+  allowed-origins:
+    - "http://localhost:3000"
+    - "http://localhost:4200"
+
+# application-prod.yml
+cors:
+  allowed-origins:
+    - "https://myapp.com"
+    - "https://admin.myapp.com"
+```
+
+```java
+@Configuration
+public class CorsConfig implements WebMvcConfigurer {
+
+    @Value("${cors.allowed-origins}")
+    private List<String> allowedOrigins;
+
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+        registry.addMapping("/api/**")
+                .allowedOrigins(allowedOrigins.toArray(new String[0]))
+                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                .allowedHeaders("*")
+                .allowCredentials(true)
+                .maxAge(3600);
+    }
+}
+```
+
+---
+
+## Full Picture — All 4 Ways
+
+```
+┌───────────────────────────────────────────────────────┐
+│                  Spring Boot App                       │
+│                                                       │
+│  Request comes in                                     │
+│        │                                              │
+│        ▼                                              │
+│  ┌─────────────┐                                      │
+│  │ CorsFilter  │ ◄── Way 3 (Filter level)             │
+│  │   Bean      │     runs FIRST, before security      │
+│  └──────┬──────┘                                      │
+│         │                                             │
+│         ▼                                             │
+│  ┌──────────────────┐                                 │
+│  │  Spring Security │ ◄── Way 4 (Security level)      │
+│  │  Filter Chain    │     cors() inside HttpSecurity   │
+│  └──────┬───────────┘                                 │
+│         │                                             │
+│         ▼                                             │
+│  ┌──────────────────┐                                 │
+│  │ WebMvcConfigurer │ ◄── Way 2 (MVC level)           │
+│  │ addCorsMappings  │     global, all controllers      │
+│  └──────┬───────────┘                                 │
+│         │                                             │
+│         ▼                                             │
+│  ┌──────────────────┐                                 │
+│  │  @CrossOrigin    │ ◄── Way 1 (Method/Class level)  │
+│  │  on Controller   │     most specific, overrides     │
+│  └──────────────────┘                                 │
+└───────────────────────────────────────────────────────┘
+```
+
+---
+
+## Key Interview Points
+
+| Question | Answer |
+|---|---|
+| What is CORS? | Browser security mechanism to allow/block cross-origin requests |
+| Who enforces CORS? | The **browser** — not the server, not Postman |
+| What is a preflight? | OPTIONS request browser sends before non-simple requests to check permissions |
+| Best place in microservices? | **API Gateway** — single source of truth for CORS |
+| Can you use `*` with credentials? | **No** — browser rejects wildcard + `allowCredentials=true` |
+| Which runs first — Security or WebMvcConfigurer CORS? | Security filter runs first — always configure CORS inside security too |
+| What does `maxAge` do? | Caches the preflight response so browser skips OPTIONS for that duration |
     
 </script>
 

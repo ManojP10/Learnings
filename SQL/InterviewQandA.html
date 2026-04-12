@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+# SQL Interview Questions & Answers (4 Years Experience)
+
+---
+
+## Category 1: Core SQL Fundamentals
+
+**Q1. What is the difference between DELETE, TRUNCATE, and DROP?**
+
+```
+┌─────────────┬──────────────┬───────────────┬─────────────────┐
+│             │ DELETE       │ TRUNCATE      │ DROP            │
+├─────────────┼──────────────┼───────────────┼─────────────────┤
+│ What        │ Removes rows │ Removes all   │ Removes entire  │
+│             │ one by one   │ rows at once  │ table + schema  │
+├─────────────┼──────────────┼───────────────┼─────────────────┤
+│ WHERE clause│ Yes          │ No            │ No              │
+├─────────────┼──────────────┼───────────────┼─────────────────┤
+│ Rollback    │ Yes (DML)    │ No (DDL)      │ No (DDL)        │
+├─────────────┼──────────────┼───────────────┼─────────────────┤
+│ Triggers    │ Fires        │ Does not fire │ Does not fire   │
+├─────────────┼──────────────┼───────────────┼─────────────────┤
+│ Speed       │ Slow         │ Fast          │ Fastest         │
+├─────────────┼──────────────┼───────────────┼─────────────────┤
+│ Identity    │ Keeps        │ Resets        │ Gone            │
+│ Reset       │ counter      │ counter       │                 │
+└─────────────┴──────────────┴───────────────┴─────────────────┘
+```
+
+```sql
+DELETE FROM users WHERE id = 5;       -- removes specific row, can rollback
+TRUNCATE TABLE users;                  -- removes all rows, fast, no rollback
+DROP TABLE users;                      -- removes table entirely
+```
+
+---
+
+**Q2. What is the difference between WHERE and HAVING?**
+
+`WHERE` filters **rows before grouping**. `HAVING` filters **groups after grouping**.
+
+```sql
+-- WHERE: filters individual rows before GROUP BY
+SELECT department, COUNT(*) as emp_count
+FROM employees
+WHERE salary > 50000          -- filter rows first
+GROUP BY department;
+
+-- HAVING: filters groups after GROUP BY
+SELECT department, COUNT(*) as emp_count
+FROM employees
+GROUP BY department
+HAVING COUNT(*) > 5;          -- filter groups
+
+-- Both together
+SELECT department, AVG(salary) as avg_sal
+FROM employees
+WHERE status = 'ACTIVE'       -- row filter first
+GROUP BY department
+HAVING AVG(salary) > 60000;   -- group filter after
+```
+
+> Rule of thumb: `WHERE` cannot use aggregate functions. `HAVING` can.
+
+---
+
+**Q3. What are constraints in SQL?**
+
+```sql
+CREATE TABLE employees (
+    id          INT          PRIMARY KEY,          -- unique + not null
+    email       VARCHAR(100) UNIQUE,               -- no duplicates
+    name        VARCHAR(100) NOT NULL,             -- cannot be null
+    age         INT          CHECK (age >= 18),    -- value rule
+    dept_id     INT          REFERENCES departments(id),  -- FK
+    status      VARCHAR(20)  DEFAULT 'ACTIVE'      -- default value
+);
+```
+
+---
+
+**Q4. Difference between CHAR and VARCHAR?**
+
+```
+CHAR(10)    -- fixed length, always uses 10 bytes. 'hi' stored as 'hi        '
+VARCHAR(10) -- variable length, uses only what's needed. 'hi' stored as 'hi'
+```
+
+Use `CHAR` for fixed-length data like country codes, gender flags. Use `VARCHAR` for variable-length like names, emails.
+
+---
+
+**Q5. What is normalization? Explain 1NF, 2NF, 3NF.**
+
+```
+1NF — No repeating groups, atomic values
+      BAD:  | id | skills          |
+            | 1  | Java, Python    |   ← multiple values in one cell
+      GOOD: | id | skill  |
+            | 1  | Java   |
+            | 1  | Python |
+
+2NF — 1NF + No partial dependency
+      (every non-key column depends on the WHOLE primary key)
+      BAD:  | order_id | product_id | product_name |  ← product_name depends
+            composite PK = (order_id, product_id)       only on product_id
+      GOOD: Split into orders table and products table
+
+3NF — 2NF + No transitive dependency
+      (non-key column should not depend on another non-key column)
+      BAD:  | emp_id | dept_id | dept_name |  ← dept_name depends on dept_id,
+                                                not directly on emp_id
+      GOOD: Split into employees and departments tables
+```
+
+---
+
+## Category 2: JOINS (Complete Coverage)
+
+**Q6. Explain all types of JOINs with examples.**
+
+Setup tables:
+
+```sql
+-- employees table
+| id | name    | dept_id |
+|----|---------|---------|
+| 1  | Alice   | 10      |
+| 2  | Bob     | 20      |
+| 3  | Charlie | 30      |
+| 4  | Diana   | NULL    |
+
+-- departments table
+| id | dept_name   |
+|----|-------------|
+| 10 | Engineering |
+| 20 | Marketing   |
+| 40 | HR          |   ← no employee in dept 40
+```
+
+---
+
+### INNER JOIN — only matching rows from both sides
+
+```sql
+SELECT e.name, d.dept_name
+FROM employees e
+INNER JOIN departments d ON e.dept_id = d.id;
+
+-- Result:
+| name  | dept_name   |
+|-------|-------------|
+| Alice | Engineering |
+| Bob   | Marketing   |
+-- Charlie (dept 30) excluded — no dept match
+-- Diana (NULL dept) excluded
+-- HR (dept 40) excluded — no employee
+```
+
+```
+employees       departments
+   [Alice  ●]──────[● Engineering]
+   [Bob    ●]──────[● Marketing  ]
+   [Charlie ○]            ○ HR
+   [Diana   ○]
+   
+   ● = matched (returned)
+   ○ = not matched (excluded)
+```
+
+---
+
+### LEFT JOIN — all rows from left, matching from right (NULL if no match)
+
+```sql
+SELECT e.name, d.dept_name
+FROM employees e
+LEFT JOIN departments d ON e.dept_id = d.id;
+
+-- Result:
+| name    | dept_name   |
+|---------|-------------|
+| Alice   | Engineering |
+| Bob     | Marketing   |
+| Charlie | NULL        |   ← dept 30 not in departments
+| Diana   | NULL        |   ← dept is NULL
+-- HR still excluded (it's on the right side)
+```
+
+---
+
+### RIGHT JOIN — all rows from right, matching from left (NULL if no match)
+
+```sql
+SELECT e.name, d.dept_name
+FROM employees e
+RIGHT JOIN departments d ON e.dept_id = d.id;
+
+-- Result:
+| name  | dept_name   |
+|-------|-------------|
+| Alice | Engineering |
+| Bob   | Marketing   |
+| NULL  | HR          |   ← dept 40 has no employee
+-- Charlie and Diana excluded (no dept match on right)
+```
+
+---
+
+### FULL OUTER JOIN — all rows from both sides (NULL where no match)
+
+```sql
+SELECT e.name, d.dept_name
+FROM employees e
+FULL OUTER JOIN departments d ON e.dept_id = d.id;
+
+-- Result:
+| name    | dept_name   |
+|---------|-------------|
+| Alice   | Engineering |
+| Bob     | Marketing   |
+| Charlie | NULL        |
+| Diana   | NULL        |
+| NULL    | HR          |
+```
+
+> MySQL doesn't support FULL OUTER JOIN natively. Simulate it:
+
+```sql
+SELECT e.name, d.dept_name FROM employees e LEFT JOIN departments d ON e.dept_id = d.id
+UNION
+SELECT e.name, d.dept_name FROM employees e RIGHT JOIN departments d ON e.dept_id = d.id;
+```
+
+---
+
+### CROSS JOIN — every row from left paired with every row from right (cartesian product)
+
+```sql
+SELECT e.name, d.dept_name
+FROM employees e
+CROSS JOIN departments d;
+
+-- Result: 4 employees × 3 departments = 12 rows
+-- Every combination
+```
+
+Use case: generating combinations, test data, date dimension tables.
+
+---
+
+### SELF JOIN — joining a table with itself
+
+```sql
+-- employees with manager_id referencing the same table
+| id | name    | manager_id |
+|----|---------|------------|
+| 1  | Alice   | NULL       |   ← CEO
+| 2  | Bob     | 1          |
+| 3  | Charlie | 1          |
+| 4  | Diana   | 2          |
+
+SELECT e.name AS employee, m.name AS manager
+FROM employees e
+LEFT JOIN employees m ON e.manager_id = m.id;
+
+-- Result:
+| employee | manager |
+|----------|---------|
+| Alice    | NULL    |
+| Bob      | Alice   |
+| Charlie  | Alice   |
+| Diana    | Bob     |
+```
+
+---
+
+### NATURAL JOIN — auto-joins on columns with the same name (avoid in production)
+
+```sql
+SELECT * FROM employees NATURAL JOIN departments;
+-- Automatically joins on matching column names
+-- Dangerous: if schema changes, join columns change silently
+```
+
+---
+
+### All JOINs — Visual Summary
+
+```
+INNER JOIN          LEFT JOIN           RIGHT JOIN
+  ┌───┬───┐           ┌───┬───┐           ┌───┬───┐
+  │   │███│           │███│███│           │   │███│
+  │   │███│           │███│███│           │   │███│
+  └───┴───┘           └───┴───┘           └───┴───┘
+  Only overlap        All left +          All right +
+                      overlap             overlap
+
+FULL OUTER JOIN     CROSS JOIN
+  ┌───┬───┐          Every row × every row
+  │███│███│          (cartesian product)
+  │███│███│
+  └───┴───┘
+  Everything
+```
+
+---
+
+### Multi-table JOIN (real-world)
+
+```sql
+SELECT
+    o.id          AS order_id,
+    c.name        AS customer,
+    p.name        AS product,
+    oi.quantity,
+    oi.quantity * p.price AS total
+FROM orders o
+INNER JOIN customers  c  ON o.customer_id = c.id
+INNER JOIN order_items oi ON o.id = oi.order_id
+INNER JOIN products   p  ON oi.product_id = p.id
+WHERE o.status = 'COMPLETED'
+ORDER BY o.created_at DESC;
+```
+
+---
+
+### JOIN with aggregation (very common interview pattern)
+
+```sql
+-- Department-wise average salary with employee count
+SELECT
+    d.dept_name,
+    COUNT(e.id)       AS employee_count,
+    AVG(e.salary)     AS avg_salary,
+    MAX(e.salary)     AS max_salary
+FROM departments d
+LEFT JOIN employees e ON d.id = e.dept_id
+GROUP BY d.id, d.dept_name
+HAVING COUNT(e.id) > 0
+ORDER BY avg_salary DESC;
+```
+
+---
+
+## Category 3: Subqueries
+
+**Q7. Types of subqueries — scalar, row, table, correlated.**
+
+```sql
+-- Scalar subquery — returns single value
+SELECT name, salary,
+       (SELECT AVG(salary) FROM employees) AS company_avg
+FROM employees;
+
+-- Row subquery — returns single row
+SELECT * FROM employees
+WHERE (dept_id, salary) = (SELECT dept_id, MAX(salary)
+                            FROM employees
+                            WHERE dept_id = 10);
+
+-- Table subquery — returns multiple rows (used with IN)
+SELECT name FROM employees
+WHERE dept_id IN (
+    SELECT id FROM departments WHERE location = 'Bangalore'
+);
+
+-- Correlated subquery — references outer query (runs once per row)
+SELECT e.name, e.salary
+FROM employees e
+WHERE e.salary > (
+    SELECT AVG(salary)
+    FROM employees
+    WHERE dept_id = e.dept_id    -- ← references outer query's dept_id
+);
+-- "employees who earn more than their own department's average"
+```
+
+---
+
+**Q8. Subquery vs JOIN — when to use which?**
+
+```sql
+-- Subquery version (readable, but slower for large datasets)
+SELECT name FROM employees
+WHERE dept_id IN (SELECT id FROM departments WHERE location = 'Bangalore');
+
+-- JOIN version (usually faster, optimizer-friendly)
+SELECT e.name
+FROM employees e
+INNER JOIN departments d ON e.dept_id = d.id
+WHERE d.location = 'Bangalore';
+```
+
+> Use JOIN when you need columns from both tables or performance matters. Use subquery when the logic reads more naturally or you need aggregation before filtering.
+
+---
+
+## Category 4: Window Functions
+
+**Q9. What are window functions? Explain with examples.**
+
+Window functions perform calculations **across a set of rows related to the current row** — without collapsing rows like `GROUP BY` does.
+
+```sql
+SELECT
+    name,
+    dept_id,
+    salary,
+    -- rank within department by salary
+    RANK()        OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rank_in_dept,
+    DENSE_RANK()  OVER (PARTITION BY dept_id ORDER BY salary DESC) AS dense_rank,
+    ROW_NUMBER()  OVER (PARTITION BY dept_id ORDER BY salary DESC) AS row_num,
+    -- running total of salary in department
+    SUM(salary)   OVER (PARTITION BY dept_id ORDER BY salary)      AS running_total,
+    -- dept average alongside each row
+    AVG(salary)   OVER (PARTITION BY dept_id)                      AS dept_avg,
+    -- access previous and next row
+    LAG(salary)   OVER (PARTITION BY dept_id ORDER BY salary)      AS prev_salary,
+    LEAD(salary)  OVER (PARTITION BY dept_id ORDER BY salary)      AS next_salary
+FROM employees;
+```
+
+```
+RANK vs DENSE_RANK vs ROW_NUMBER:
+
+salary: 90, 80, 80, 70
+
+RANK:        1, 2, 2, 4    ← gap after tie
+DENSE_RANK:  1, 2, 2, 3    ← no gap
+ROW_NUMBER:  1, 2, 3, 4    ← always unique
+```
+
+---
+
+**Q10. Find the top N employees per department (very common interview question).**
+
+```sql
+-- Top 2 earners per department
+WITH ranked AS (
+    SELECT
+        name,
+        dept_id,
+        salary,
+        DENSE_RANK() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rnk
+    FROM employees
+)
+SELECT name, dept_id, salary
+FROM ranked
+WHERE rnk <= 2;
+```
+
+---
+
+## Category 5: CTEs & Advanced
+
+**Q11. What is a CTE? How is it different from a subquery?**
+
+```sql
+-- Subquery version (nested, harder to read)
+SELECT dept_id, AVG(avg_sal)
+FROM (
+    SELECT dept_id, AVG(salary) AS avg_sal
+    FROM employees
+    GROUP BY dept_id
+) dept_avgs
+GROUP BY dept_id;
+
+-- CTE version (readable, reusable within query)
+WITH dept_avgs AS (
+    SELECT dept_id, AVG(salary) AS avg_sal
+    FROM employees
+    GROUP BY dept_id
+),
+high_paying AS (
+    SELECT dept_id FROM dept_avgs WHERE avg_sal > 70000
+)
+SELECT e.name, e.salary
+FROM employees e
+INNER JOIN high_paying hp ON e.dept_id = hp.dept_id;
+```
+
+CTEs are also the only way to write **recursive queries**:
+
+```sql
+-- Recursive CTE — walk employee hierarchy
+WITH RECURSIVE emp_hierarchy AS (
+    -- anchor: start with CEO (no manager)
+    SELECT id, name, manager_id, 0 AS level
+    FROM employees
+    WHERE manager_id IS NULL
+
+    UNION ALL
+
+    -- recursive: find each manager's reports
+    SELECT e.id, e.name, e.manager_id, eh.level + 1
+    FROM employees e
+    INNER JOIN emp_hierarchy eh ON e.manager_id = eh.id
+)
+SELECT * FROM emp_hierarchy ORDER BY level;
+```
+
+---
+
+## Category 6: Indexes
+
+**Q12. What is an index? Types of indexes?**
+
+```sql
+-- Single column index
+CREATE INDEX idx_emp_email ON employees(email);
+
+-- Composite index (column order matters!)
+CREATE INDEX idx_emp_dept_salary ON employees(dept_id, salary);
+-- Good for: WHERE dept_id = 10 AND salary > 50000
+-- Good for: WHERE dept_id = 10   (left-prefix rule)
+-- Bad for:  WHERE salary > 50000 (skips dept_id)
+
+-- Unique index
+CREATE UNIQUE INDEX idx_emp_email_unique ON employees(email);
+
+-- Partial index (index only a subset of rows)
+CREATE INDEX idx_active_emp ON employees(email) WHERE status = 'ACTIVE';
+```
+
+```
+Without index: Full table scan — O(n)
+With index:    B-tree traversal — O(log n)
+
+Tradeoff:
++ Faster SELECT
+- Slower INSERT/UPDATE/DELETE (index must be updated too)
+- Extra disk space
+```
+
+---
+
+**Q13. When would you NOT use an index?**
+
+- Small tables (full scan is faster than index lookup + row fetch)
+- Columns with very low cardinality (e.g., `status` with only 2 values — index not selective enough)
+- Columns that are frequently updated
+- Table that is mostly written to, rarely read
+
+---
+
+## Category 7: Transactions & ACID
+
+**Q14. What are ACID properties?**
+
+```
+A — Atomicity:   All operations succeed or all are rolled back. No partial updates.
+C — Consistency: DB moves from one valid state to another. Constraints always hold.
+I — Isolation:   Concurrent transactions don't interfere with each other.
+D — Durability:  Committed transactions survive crashes (written to disk).
+```
+
+```sql
+BEGIN TRANSACTION;
+    UPDATE accounts SET balance = balance - 1000 WHERE id = 1;  -- debit
+    UPDATE accounts SET balance = balance + 1000 WHERE id = 2;  -- credit
+    -- if either fails, both are rolled back
+COMMIT;
+```
+
+---
+
+**Q15. What are isolation levels and their problems?**
+
+```
+Problem types:
+  Dirty Read     — reading uncommitted data from another transaction
+  Non-repeatable — same query returns different data within same transaction
+  Phantom Read   — new rows appear in same query within same transaction
+
+┌────────────────────┬────────────┬─────────────────┬──────────────┐
+│ Isolation Level    │ Dirty Read │ Non-repeatable  │ Phantom Read │
+├────────────────────┼────────────┼─────────────────┼──────────────┤
+│ READ UNCOMMITTED   │ Possible   │ Possible        │ Possible     │
+│ READ COMMITTED     │ Prevented  │ Possible        │ Possible     │
+│ REPEATABLE READ    │ Prevented  │ Prevented       │ Possible     │
+│ SERIALIZABLE       │ Prevented  │ Prevented       │ Prevented    │
+└────────────────────┴────────────┴─────────────────┴──────────────┘
+```
+
+Higher isolation = safer but slower (more locking).
+
+---
+
+## Category 8: Classic Problem Queries
+
+**Q16. Find second highest salary.**
+
+```sql
+-- Method 1: subquery
+SELECT MAX(salary) FROM employees
+WHERE salary < (SELECT MAX(salary) FROM employees);
+
+-- Method 2: DENSE_RANK (handles ties correctly)
+SELECT salary FROM (
+    SELECT salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS rnk
+    FROM employees
+) ranked
+WHERE rnk = 2;
+
+-- Method 3: LIMIT/OFFSET
+SELECT DISTINCT salary FROM employees
+ORDER BY salary DESC
+LIMIT 1 OFFSET 1;
+```
+
+---
+
+**Q17. Find duplicate records.**
+
+```sql
+-- Find emails that appear more than once
+SELECT email, COUNT(*) AS count
+FROM employees
+GROUP BY email
+HAVING COUNT(*) > 1;
+
+-- Get full rows of duplicates
+SELECT * FROM employees
+WHERE email IN (
+    SELECT email FROM employees
+    GROUP BY email
+    HAVING COUNT(*) > 1
+);
+```
+
+---
+
+**Q18. Delete duplicate rows keeping only one.**
+
+```sql
+-- Keep the row with the lowest id, delete the rest
+DELETE FROM employees
+WHERE id NOT IN (
+    SELECT MIN(id)
+    FROM employees
+    GROUP BY email
+);
+```
+
+---
+
+**Q19. Find employees who earn more than their manager.**
+
+```sql
+SELECT e.name AS employee, e.salary AS emp_salary,
+       m.name AS manager,  m.salary AS mgr_salary
+FROM employees e
+INNER JOIN employees m ON e.manager_id = m.id
+WHERE e.salary > m.salary;
+```
+
+---
+
+**Q20. Departments with no employees.**
+
+```sql
+-- Using LEFT JOIN
+SELECT d.dept_name
+FROM departments d
+LEFT JOIN employees e ON d.id = e.dept_id
+WHERE e.id IS NULL;
+
+-- Using NOT EXISTS
+SELECT dept_name FROM departments d
+WHERE NOT EXISTS (
+    SELECT 1 FROM employees e WHERE e.dept_id = d.id
+);
+
+-- Using NOT IN
+SELECT dept_name FROM departments
+WHERE id NOT IN (SELECT DISTINCT dept_id FROM employees WHERE dept_id IS NOT NULL);
+```
+
+---
+
+**Q21. Running total / cumulative sum.**
+
+```sql
+SELECT
+    order_date,
+    amount,
+    SUM(amount) OVER (ORDER BY order_date) AS running_total
+FROM orders;
+```
+
+---
+
+**Q22. Pivot rows to columns.**
+
+```sql
+-- Monthly sales per product — rows to columns
+SELECT
+    product_id,
+    SUM(CASE WHEN MONTH(order_date) = 1 THEN amount ELSE 0 END) AS Jan,
+    SUM(CASE WHEN MONTH(order_date) = 2 THEN amount ELSE 0 END) AS Feb,
+    SUM(CASE WHEN MONTH(order_date) = 3 THEN amount ELSE 0 END) AS Mar
+FROM orders
+GROUP BY product_id;
+```
+
+---
+
+## Category 9: Performance & Query Optimization
+
+**Q23. How do you optimize a slow query?**
+
+```sql
+-- Step 1: Use EXPLAIN / EXPLAIN ANALYZE
+EXPLAIN SELECT * FROM employees WHERE dept_id = 10;
+-- Look for: "Full Table Scan" → needs an index
+
+-- Step 2: Add appropriate index
+CREATE INDEX idx_dept_id ON employees(dept_id);
+
+-- Step 3: Avoid SELECT * — fetch only needed columns
+-- Bad:
+SELECT * FROM employees WHERE dept_id = 10;
+-- Good:
+SELECT id, name, salary FROM employees WHERE dept_id = 10;
+
+-- Step 4: Avoid functions on indexed columns in WHERE clause
+-- Bad (index not used):
+SELECT * FROM employees WHERE YEAR(created_at) = 2024;
+-- Good (index used):
+SELECT * FROM employees
+WHERE created_at BETWEEN '2024-01-01' AND '2024-12-31';
+
+-- Step 5: Use EXISTS instead of IN for large subqueries
+-- IN evaluates entire subquery first
+SELECT * FROM departments
+WHERE id IN (SELECT dept_id FROM employees WHERE salary > 80000);
+
+-- EXISTS stops at first match
+SELECT * FROM departments d
+WHERE EXISTS (
+    SELECT 1 FROM employees e
+    WHERE e.dept_id = d.id AND e.salary > 80000
+);
+```
+
+---
+
+## Quick-Fire Interview Q&A
+
+**Q: What is the difference between UNION and UNION ALL?**
+`UNION` removes duplicates (sorts internally). `UNION ALL` keeps all rows including duplicates and is faster.
+
+**Q: Can a table have multiple primary keys?**
+No — only one primary key, but it can be a composite key (combination of multiple columns).
+
+**Q: What is a foreign key?**
+A column that references the primary key of another table, enforcing referential integrity.
+
+**Q: What is a view?**
+A virtual table based on a SELECT query. Doesn't store data itself. Used for abstraction, security, and simplifying complex queries.
+
+**Q: What is a stored procedure vs a function?**
+Stored procedure: can have IN/OUT params, no return value required, can have side effects. Function: must return a value, used in SELECT, generally no side effects.
+
+**Q: What is the difference between clustered and non-clustered index?**
+Clustered index determines the physical order of data in the table — only one per table (usually the PK). Non-clustered index is a separate structure pointing to rows — a table can have many.
+
+**Q: What does `NULL = NULL` return?**
+`NULL` — not `TRUE`. Use `IS NULL` or `IS NOT NULL` to check for nulls. `NULL` is unknown, not a value.
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

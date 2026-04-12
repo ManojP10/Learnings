@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+# Client-Side vs Server-Side API Versioning
+
+Let me give you the full picture — brief server-side context, then deep-dive into client-side.
+
+---
+
+## Quick Server-Side Recap (Context)
+
+The server **exposes** versioned endpoints. The client **decides which version to call**. That decision logic living in the client is what "client-side versioning" means.
+
+```
+Client Code                          Server
+-----------                          ------
+"I want v2 users"    ───────────►   /api/v2/users/{id}
+"I want v1 orders"   ───────────►   /api/v1/orders/{id}
+```
+
+The server just waits. The client is responsible for knowing, negotiating, and sending the right version signal.
+
+---
+
+## All the Ways a Client Can Send Version Info
+
+There are exactly 4 channels a client can use, each matching a server strategy:
+
+---
+
+## Way 1: URI Path Versioning (Client Side)
+
+The client hardcodes or configures the version in the base URL.
+
+### Naive approach (avoid in production)
+
+```java
+// Hardcoded - brittle
+RestTemplate restTemplate = new RestTemplate();
+String url = "http://user-service/api/v2/users/" + userId;
+UserV2Response user = restTemplate.getForObject(url, UserV2Response.class);
+```
+
+---
+
+### Better: Centralized version config
+
+```java
+// application.yml
+api:
+  user-service:
+    base-url: http://user-service
+    version: v2
+
+// Config class
+@Configuration
+@ConfigurationProperties(prefix = "api.user-service")
+public class UserServiceConfig {
+    private String baseUrl;
+    private String version;
+
+    // getters + setters
+
+    public String getVersionedUrl() {
+        return baseUrl + "/api/" + version;  // http://user-service/api/v2
+    }
+}
+
+// Client usage
+@Service
+public class UserClient {
+
+    private final RestTemplate restTemplate;
+    private final UserServiceConfig config;
+
+    public UserClient(RestTemplate restTemplate, UserServiceConfig config) {
+        this.restTemplate = restTemplate;
+        this.config = config;
+    }
+
+    public UserV2Response getUser(Long id) {
+        String url = config.getVersionedUrl() + "/users/" + id;
+        return restTemplate.getForObject(url, UserV2Response.class);
+    }
+}
+```
+
+Version is now in `application.yml` — you change it in one place, all calls update.
+
+---
+
+### Best: WebClient (reactive) with base URL
+
+```java
+@Configuration
+public class WebClientConfig {
+
+    @Bean
+    public WebClient userServiceClient(@Value("${api.user-service.base-url}") String baseUrl,
+                                       @Value("${api.user-service.version}") String version) {
+        return WebClient.builder()
+                .baseUrl(baseUrl + "/api/" + version)   // baked in once
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .build();
+    }
+}
+
+@Service
+public class UserClient {
+
+    private final WebClient userServiceClient;
+
+    public UserClient(WebClient userServiceClient) {
+        this.userServiceClient = userServiceClient;
+    }
+
+    public Mono<UserV2Response> getUser(Long id) {
+        return userServiceClient
+                .get()
+                .uri("/users/{id}", id)    // base already has /api/v2
+                .retrieve()
+                .bodyToMono(UserV2Response.class);
+    }
+}
+```
+
+---
+
+### Best: OpenFeign Client (most common in microservices)
+
+```java
+// application.yml
+user-service:
+  url: http://user-service/api/v2
+
+// Feign client - version baked into the path
+@FeignClient(name = "user-service", url = "${user-service.url}")
+public interface UserServiceClient {
+
+    @GetMapping("/users/{id}")
+    UserV2Response getUser(@PathVariable("id") Long id);
+
+    @GetMapping("/users")
+    List<UserV2Response> getAllUsers();
+}
+
+// Calling it - zero boilerplate
+@Service
+public class OrderService {
+
+    private final UserServiceClient userServiceClient;
+
+    public void processOrder(Long userId) {
+        UserV2Response user = userServiceClient.getUser(userId);
+        // ...
+    }
+}
+```
+
+Feign is the cleanest pattern — the version lives in `application.yml`, the interface is version-agnostic.
+
+---
+
+## Way 2: Request Parameter Versioning (Client Side)
+
+The client appends `?version=X` to every call.
+
+### RestTemplate with UriComponentsBuilder
+
+```java
+@Service
+public class ProductClient {
+
+    private final RestTemplate restTemplate;
+
+    @Value("${api.product-service.version}")
+    private String apiVersion;
+
+    public ProductResponse getProduct(Long id) {
+        String url = UriComponentsBuilder
+                .fromHttpUrl("http://product-service/api/products/{id}")
+                .queryParam("version", apiVersion)   // ?version=2
+                .buildAndExpand(id)
+                .toUriString();
+
+        return restTemplate.getForObject(url, ProductResponse.class);
+    }
+}
+```
+
+### WebClient approach
+
+```java
+public Mono<ProductResponse> getProduct(Long id) {
+    return webClient.get()
+            .uri(uriBuilder -> uriBuilder
+                    .path("/products/{id}")
+                    .queryParam("version", "2")
+                    .build(id))
+            .retrieve()
+            .bodyToMono(ProductResponse.class);
+}
+```
+
+### Feign with query param
+
+```java
+@FeignClient(name = "product-service", url = "${product-service.url}")
+public interface ProductServiceClient {
+
+    @GetMapping("/products/{id}")
+    ProductResponse getProduct(
+            @PathVariable("id") Long id,
+            @RequestParam("version") String version   // caller passes version
+    );
+}
+
+// Usage
+productServiceClient.getProduct(id, "2");
+```
+
+---
+
+## Way 3: Header Versioning (Client Side)
+
+The client injects a custom header (`X-API-Version`) on every request.
+
+### RestTemplate with default headers
+
+```java
+@Configuration
+public class RestTemplateConfig {
+
+    @Bean
+    public RestTemplate restTemplate(@Value("${api.version}") String apiVersion) {
+        RestTemplate restTemplate = new RestTemplate();
+
+        // Interceptor adds version header to EVERY outgoing request
+        restTemplate.getInterceptors().add((request, body, execution) -> {
+            request.getHeaders().add("X-API-Version", apiVersion);
+            return execution.execute(request, body);
+        });
+
+        return restTemplate;
+    }
+}
+
+// Client - no manual header needed, interceptor handles it
+@Service
+public class InventoryClient {
+
+    private final RestTemplate restTemplate;
+
+    public InventoryResponse getInventory(Long productId) {
+        return restTemplate.getForObject(
+            "http://inventory-service/api/inventory/" + productId,
+            InventoryResponse.class
+        );
+    }
+}
+```
+
+### WebClient with default header
+
+```java
+@Bean
+public WebClient inventoryClient(@Value("${api.version}") String apiVersion) {
+    return WebClient.builder()
+            .baseUrl("http://inventory-service/api")
+            .defaultHeader("X-API-Version", apiVersion)   // baked into every request
+            .build();
+}
+```
+
+### Feign with RequestInterceptor
+
+```java
+@Configuration
+public class FeignVersionInterceptor implements RequestInterceptor {
+
+    @Value("${api.version}")
+    private String apiVersion;
+
+    @Override
+    public void apply(RequestTemplate template) {
+        template.header("X-API-Version", apiVersion);   // added to every Feign call
+    }
+}
+
+// Register it
+@FeignClient(
+    name = "inventory-service",
+    url = "${inventory-service.url}",
+    configuration = FeignVersionInterceptor.class
+)
+public interface InventoryServiceClient {
+
+    @GetMapping("/inventory/{productId}")
+    InventoryResponse getInventory(@PathVariable Long productId);
+}
+```
+
+`RequestInterceptor` is the cleanest Feign pattern — one class, all clients on that Feign config get the header automatically.
+
+---
+
+## Way 4: Media Type / Content Negotiation (Client Side)
+
+The client sets `Accept: application/vnd.company.app-v2+json` on every request.
+
+### RestTemplate
+
+```java
+@Service
+public class UserClient {
+
+    private final RestTemplate restTemplate;
+
+    public UserV2Response getUser(Long id) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(List.of(
+            MediaType.parseMediaType("application/vnd.company.app-v2+json")
+        ));
+
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<UserV2Response> response = restTemplate.exchange(
+                "http://user-service/api/users/" + id,
+                HttpMethod.GET,
+                entity,
+                UserV2Response.class
+        );
+
+        return response.getBody();
+    }
+}
+```
+
+### WebClient
+
+```java
+public Mono<UserV2Response> getUser(Long id) {
+    return webClient.get()
+            .uri("/users/{id}", id)
+            .accept(MediaType.parseMediaType("application/vnd.company.app-v2+json"))
+            .retrieve()
+            .bodyToMono(UserV2Response.class);
+}
+```
+
+### Feign
+
+```java
+@FeignClient(name = "user-service", url = "${user-service.url}")
+public interface UserServiceClient {
+
+    @GetMapping(
+        value = "/users/{id}",
+        produces = "application/vnd.company.app-v2+json"   // sets Accept header
+    )
+    UserV2Response getUser(@PathVariable Long id);
+}
+```
+
+---
+
+## Handling Version Upgrades Gracefully (Version Migration Pattern)
+
+When v3 is released and you need to migrate from v2, don't hard-switch everywhere. Use a **version negotiation wrapper**:
+
+```java
+@Service
+public class UserClientFacade {
+
+    private final UserServiceV2Client v2Client;
+    private final UserServiceV3Client v3Client;
+
+    @Value("${api.user-service.version}")
+    private String activeVersion;
+
+    // Single method — internally routes to the right version
+    public UserResponse getUser(Long id) {
+        return switch (activeVersion) {
+            case "v3" -> mapFromV3(v3Client.getUser(id));
+            default   -> mapFromV2(v2Client.getUser(id));
+        };
+    }
+
+    // Map V2 response → unified internal model
+    private UserResponse mapFromV2(UserV2Response v2) {
+        UserResponse r = new UserResponse();
+        r.setFullName(v2.getName());          // V2 has single "name"
+        r.setEmail(v2.getEmail());
+        return r;
+    }
+
+    // Map V3 response → unified internal model
+    private UserResponse mapFromV3(UserV3Response v3) {
+        UserResponse r = new UserResponse();
+        r.setFullName(v3.getFirstName() + " " + v3.getLastName());  // V3 split name
+        r.setEmail(v3.getEmail());
+        return r;
+    }
+}
+```
+
+**The key idea:** Your internal service code calls `UserClientFacade.getUser()` — it knows nothing about versions. The facade absorbs the version difference. Switch versions by flipping `application.yml`.
+
+---
+
+## Full Picture: All 4 Ways Side by Side
+
+```
+                        ┌─────────────────────────────────────────────┐
+                        │              CLIENT CODE                     │
+                        │                                              │
+                        │  ┌────────────┐   ┌──────────────────────┐  │
+                        │  │ Way 1      │   │  /api/v2/users/1     │  │
+                        │  │ URI Path   │──►│  version in URL      │  │
+                        │  └────────────┘   └──────────────────────┘  │
+                        │                                              │
+                        │  ┌────────────┐   ┌──────────────────────┐  │
+                        │  │ Way 2      │   │  /api/users/1        │  │
+                        │  │ Query Param│──►│  ?version=2          │  │
+                        │  └────────────┘   └──────────────────────┘  │
+                        │                                              │
+                        │  ┌────────────┐   ┌──────────────────────┐  │
+                        │  │ Way 3      │   │  /api/users/1        │  │
+                        │  │ Header     │──►│  X-API-Version: 2    │  │
+                        │  └────────────┘   └──────────────────────┘  │
+                        │                                              │
+                        │  ┌────────────┐   ┌──────────────────────┐  │
+                        │  │ Way 4      │   │  /api/users/1        │  │
+                        │  │ Media Type │──►│  Accept: vnd...v2    │  │
+                        │  └────────────┘   └──────────────────────┘  │
+                        └─────────────────────────────────────────────┘
+```
+
+---
+
+## Client-Side Best Practices Summary
+
+| Practice | Why |
+|---|---|
+| Never hardcode version strings in method bodies | One change = fix 100 places |
+| Store version in `application.yml` | Easy to switch per environment |
+| Use interceptors/`RequestInterceptor` for header versioning | DRY — one place for all calls |
+| Use a Facade/Mapper when migrating between versions | Internal code stays stable |
+| Version only at controller + DTO layer, not service | Service stays clean and reusable |
+| Use Feign clients in microservices | Cleanest abstraction, version hidden in config |
+
+---
+
+The **golden rule** on the client side: version info should live in **configuration**, not in business logic. Your service classes should call a method and get a response — they shouldn't know or care what version the downstream API is on. That's the whole point of the facade + config pattern.
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

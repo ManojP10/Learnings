@@ -23,7 +23,257 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# API Versioning in Spring Boot / Microservices
 
+API versioning is how you evolve your API without breaking existing clients. Here are all the major strategies, with tradeoffs.
+
+---
+
+## Why Version at All?
+
+When you change a REST API (rename a field, change a response structure, remove an endpoint), existing clients break. Versioning lets old and new clients coexist.
+
+---
+
+## Strategy 1: URI Path Versioning
+
+The version is embedded in the URL path.
+
+```java
+@RestController
+@RequestMapping("/api/v1/users")
+public class UserControllerV1 {
+
+    @GetMapping("/{id}")
+    public UserV1Response getUser(@PathVariable Long id) {
+        return new UserV1Response("John Doe", "john@example.com");
+    }
+}
+
+@RestController
+@RequestMapping("/api/v2/users")
+public class UserControllerV2 {
+
+    @GetMapping("/{id}")
+    public UserV2Response getUser(@PathVariable Long id) {
+        // V2 splits name into firstName + lastName
+        return new UserV2Response("John", "Doe", "john@example.com", "+91-9999999999");
+    }
+}
+```
+
+**Pros:** Simple, visible, easy to test in browser/Postman, cache-friendly.  
+**Cons:** URL pollution, violates REST purity (same resource, different URL).
+
+---
+
+## Strategy 2: Request Parameter Versioning
+
+Version is passed as a query parameter.
+
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @GetMapping(value = "/{id}", params = "version=1")
+    public UserV1Response getUserV1(@PathVariable Long id) {
+        return new UserV1Response("John Doe", "john@example.com");
+    }
+
+    @GetMapping(value = "/{id}", params = "version=2")
+    public UserV2Response getUserV2(@PathVariable Long id) {
+        return new UserV2Response("John", "Doe", "john@example.com");
+    }
+}
+```
+
+**Call:** `GET /api/users/1?version=2`
+
+**Pros:** Same base URL, easy to switch versions.  
+**Cons:** Not cacheable easily, clutters query params.
+
+---
+
+## Strategy 3: Header Versioning
+
+Version is passed in a custom HTTP request header.
+
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @GetMapping(value = "/{id}", headers = "X-API-Version=1")
+    public UserV1Response getUserV1(@PathVariable Long id) {
+        return new UserV1Response("John Doe", "john@example.com");
+    }
+
+    @GetMapping(value = "/{id}", headers = "X-API-Version=2")
+    public UserV2Response getUserV2(@PathVariable Long id) {
+        return new UserV2Response("John", "Doe", "john@example.com");
+    }
+}
+```
+
+**Call:** `GET /api/users/1` with header `X-API-Version: 2`
+
+**Pros:** Clean URLs, no URL pollution, semantically correct.  
+**Cons:** Not browser-testable, harder to share URLs, hidden from logs by default.
+
+---
+
+## Strategy 4: Media Type (Content Negotiation) Versioning
+
+Version is embedded in the `Accept` header's media type. This is the most REST-pure approach (used by GitHub API).
+
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @GetMapping(
+        value = "/{id}",
+        produces = "application/vnd.company.app-v1+json"
+    )
+    public UserV1Response getUserV1(@PathVariable Long id) {
+        return new UserV1Response("John Doe", "john@example.com");
+    }
+
+    @GetMapping(
+        value = "/{id}",
+        produces = "application/vnd.company.app-v2+json"
+    )
+    public UserV2Response getUserV2(@PathVariable Long id) {
+        return new UserV2Response("John", "Doe", "john@example.com");
+    }
+}
+```
+
+**Call:** `GET /api/users/1` with header `Accept: application/vnd.company.app-v2+json`
+
+**Pros:** Fully REST-compliant, clean URLs.  
+**Cons:** Complex, difficult to test manually, harder to document.
+
+---
+
+## Strategy Comparison Table
+
+| Strategy | URL Clean? | Cacheable | Browser Testable | REST-Pure | Used By |
+|---|---|---|---|---|---|
+| URI Path | ✗ | ✅ | ✅ | ✗ | Most APIs |
+| Query Param | ✅ | ✗ | ✅ | ✗ | Google APIs |
+| Header | ✅ | ✗ | ✗ | ✅ | Microsoft |
+| Media Type | ✅ | ✗ | ✗ | ✅ | GitHub |
+
+> **Industry default:** URI Path versioning (`/v1/`, `/v2/`) — simple, visible, widely understood.
+
+---
+
+## Structuring Versions in a Real Project
+
+```
+src/main/java/com/example/
+├── controller/
+│   ├── v1/
+│   │   └── UserControllerV1.java
+│   └── v2/
+│       └── UserControllerV2.java
+├── dto/
+│   ├── v1/
+│   │   └── UserResponseV1.java
+│   └── v2/
+│       └── UserResponseV2.java
+└── service/
+    └── UserService.java   <-- shared service layer, no versioning here
+```
+
+Keep versioning **at the controller and DTO layer only**. The service and repository layers should be version-agnostic. DTOs absorb the shape differences.
+
+---
+
+## Versioning at the API Gateway (Microservices)
+
+In a microservices setup, you often handle versioning at the **gateway level** (Spring Cloud Gateway / Kong / Nginx) rather than in every service.
+
+```yaml
+# Spring Cloud Gateway - application.yml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: user-service-v1
+          uri: lb://USER-SERVICE
+          predicates:
+            - Path=/api/v1/users/**
+          filters:
+            - StripPrefix=2   # strips /api/v1 before forwarding
+
+        - id: user-service-v2
+          uri: lb://USER-SERVICE-V2
+          predicates:
+            - Path=/api/v2/users/**
+          filters:
+            - StripPrefix=2
+```
+
+This way each microservice version can be **independently deployed** — `USER-SERVICE` (v1) and `USER-SERVICE-V2` can run as completely separate deployments. The gateway routes traffic by version prefix.
+
+---
+
+## Deprecation Strategy
+
+Never delete old versions abruptly. Follow a lifecycle:
+
+```java
+@GetMapping("/{id}")
+@Deprecated
+public ResponseEntity<UserV1Response> getUserV1(@PathVariable Long id) {
+    HttpHeaders headers = new HttpHeaders();
+    // Standard deprecation header (RFC 8594)
+    headers.add("Deprecation", "true");
+    headers.add("Sunset", "Sat, 01 Jan 2026 00:00:00 GMT");
+    headers.add("Link", "</api/v2/users/{id}>; rel=\"successor-version\"");
+
+    return ResponseEntity.ok()
+        .headers(headers)
+        .body(userService.getUserV1(id));
+}
+```
+
+Typical lifecycle: **Active → Deprecated (warn clients) → Sunset date announced → Removed**.
+
+---
+
+## Version via `@RequestMapping` at Class Level (Cleaner pattern)
+
+Instead of repeating version strings, centralize via a base annotation or constant:
+
+```java
+// Constants class
+public class ApiVersions {
+    public static final String V1 = "/api/v1";
+    public static final String V2 = "/api/v2";
+}
+
+@RestController
+@RequestMapping(ApiVersions.V1 + "/orders")
+public class OrderControllerV1 { ... }
+
+@RestController
+@RequestMapping(ApiVersions.V2 + "/orders")
+public class OrderControllerV2 { ... }
+```
+
+---
+
+## Key Interview Points
+
+- **Don't version everything** — only version when there's a **breaking change** (removed field, changed type, renamed field). Adding new optional fields is non-breaking.
+- **Service layer stays unversioned** — only controllers and DTOs carry version differences.
+- **In microservices**, prefer gateway-level routing for version isolation over per-service versioning.
+- **Deprecation headers** (RFC 8594) are production best practice — don't just silently remove versions.
+- **Semantic versioning** (v1, v2) is for major breaking changes; minor/patch changes don't usually need a new version.
     
 </script>
 

@@ -23,7 +23,475 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Custom Exceptions & Global Exception Handler in Spring Boot
 
+---
+
+## Why Do We Need This?
+
+By default, Spring Boot returns generic error responses like:
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00",
+  "status": 500,
+  "error": "Internal Server Error",
+  "path": "/api/users/99"
+}
+```
+
+This is useless to clients. You want:
+
+```json
+{
+  "status": 404,
+  "errorCode": "USER_NOT_FOUND",
+  "message": "User with id 99 does not exist",
+  "timestamp": "2024-01-15T10:30:00",
+  "path": "/api/users/99"
+}
+```
+
+That's exactly what custom exceptions + global handler gives you.
+
+---
+
+## The Full Flow
+
+```
+Controller/Service throws Exception
+           │
+           ▼
+  @ControllerAdvice intercepts
+           │
+           ▼
+  Matching @ExceptionHandler runs
+           │
+           ▼
+  Structured ErrorResponse returned to client
+```
+
+---
+
+## Step 1: Create a Standard Error Response DTO
+
+This is the shape of every error your API returns. Define it once.
+
+```java
+// ErrorResponse.java
+public class ErrorResponse {
+
+    private int status;
+    private String errorCode;      // machine-readable code  e.g. USER_NOT_FOUND
+    private String message;        // human-readable message
+    private String path;
+    private LocalDateTime timestamp;
+
+    // constructor
+    public ErrorResponse(int status, String errorCode,
+                         String message, String path) {
+        this.status    = status;
+        this.errorCode = errorCode;
+        this.message   = message;
+        this.path      = path;
+        this.timestamp = LocalDateTime.now();
+    }
+
+    // getters...
+}
+```
+
+---
+
+## Step 2: Create a Base Custom Exception
+
+All your custom exceptions extend this. Keeps things consistent.
+
+```java
+// BaseException.java
+public abstract class BaseException extends RuntimeException {
+
+    private final String errorCode;
+    private final HttpStatus httpStatus;
+
+    public BaseException(String errorCode, String message, HttpStatus httpStatus) {
+        super(message);
+        this.errorCode  = errorCode;
+        this.httpStatus = httpStatus;
+    }
+
+    public String getErrorCode()      { return errorCode; }
+    public HttpStatus getHttpStatus() { return httpStatus; }
+}
+```
+
+Key design decision: the exception **carries its own HTTP status and error code**. The handler just reads them — no if-else chains.
+
+---
+
+## Step 3: Create Specific Custom Exceptions
+
+Each exception maps to a specific business scenario.
+
+```java
+// ResourceNotFoundException.java  →  404
+public class ResourceNotFoundException extends BaseException {
+
+    public ResourceNotFoundException(String resource, Long id) {
+        super(
+            resource.toUpperCase() + "_NOT_FOUND",
+            resource + " with id " + id + " does not exist",
+            HttpStatus.NOT_FOUND
+        );
+    }
+}
+
+// DuplicateResourceException.java  →  409
+public class DuplicateResourceException extends BaseException {
+
+    public DuplicateResourceException(String resource, String field, String value) {
+        super(
+            resource.toUpperCase() + "_ALREADY_EXISTS",
+            resource + " with " + field + " '" + value + "' already exists",
+            HttpStatus.CONFLICT
+        );
+    }
+}
+
+// BusinessRuleException.java  →  422
+public class BusinessRuleException extends BaseException {
+
+    public BusinessRuleException(String errorCode, String message) {
+        super(errorCode, message, HttpStatus.UNPROCESSABLE_ENTITY);
+    }
+}
+
+// UnauthorizedException.java  →  401
+public class UnauthorizedException extends BaseException {
+
+    public UnauthorizedException(String message) {
+        super("UNAUTHORIZED", message, HttpStatus.UNAUTHORIZED);
+    }
+}
+
+// ForbiddenException.java  →  403
+public class ForbiddenException extends BaseException {
+
+    public ForbiddenException(String message) {
+        super("FORBIDDEN", message, HttpStatus.FORBIDDEN);
+    }
+}
+```
+
+---
+
+## Step 4: Throw Them in Service Layer
+
+```java
+@Service
+public class UserService {
+
+    private final UserRepository userRepository;
+
+    public UserResponse getUserById(Long id) {
+        return userRepository.findById(id)
+                .map(this::toResponse)
+                .orElseThrow(() -> new ResourceNotFoundException("User", id));
+                //  throws → "User with id 99 does not exist"  +  404
+    }
+
+    public UserResponse createUser(CreateUserRequest request) {
+        // check duplicate email
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new DuplicateResourceException("User", "email", request.getEmail());
+            //  throws → "User with email 'x@y.com' already exists"  +  409
+        }
+
+        // check business rule
+        if (request.getAge() < 18) {
+            throw new BusinessRuleException(
+                "USER_UNDERAGE",
+                "User must be at least 18 years old to register"
+            );
+            //  throws → custom message  +  422
+        }
+
+        User user = toEntity(request);
+        return toResponse(userRepository.save(user));
+    }
+
+    public void deleteUser(Long id, Long requestingUserId) {
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("User", id));
+
+        if (!user.getId().equals(requestingUserId)) {
+            throw new ForbiddenException("You can only delete your own account");
+        }
+
+        userRepository.delete(user);
+    }
+}
+```
+
+The controller stays completely clean — no try-catch, no error logic.
+
+```java
+@RestController
+@RequestMapping("/api/v1/users")
+public class UserController {
+
+    private final UserService userService;
+
+    @GetMapping("/{id}")
+    public ResponseEntity<UserResponse> getUser(@PathVariable Long id) {
+        return ResponseEntity.ok(userService.getUserById(id));
+        // if not found, exception propagates up to @ControllerAdvice
+    }
+
+    @PostMapping
+    public ResponseEntity<UserResponse> createUser(@Valid @RequestBody CreateUserRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                             .body(userService.createUser(request));
+    }
+}
+```
+
+---
+
+## Step 5: The Global Exception Handler
+
+This is the heart of it. `@ControllerAdvice` intercepts all exceptions thrown anywhere in the app.
+
+```java
+@ControllerAdvice
+public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    // ─────────────────────────────────────────────
+    // 1. Handle ALL your custom exceptions in one place
+    // ─────────────────────────────────────────────
+    @ExceptionHandler(BaseException.class)
+    public ResponseEntity<ErrorResponse> handleBaseException(
+            BaseException ex, HttpServletRequest request) {
+
+        log.error("Business exception: {} - {}", ex.getErrorCode(), ex.getMessage());
+
+        ErrorResponse error = new ErrorResponse(
+                ex.getHttpStatus().value(),
+                ex.getErrorCode(),
+                ex.getMessage(),
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(ex.getHttpStatus()).body(error);
+    }
+
+    // ─────────────────────────────────────────────
+    // 2. Handle @Valid / @Validated failures
+    // ─────────────────────────────────────────────
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationException(
+            MethodArgumentNotValidException ex, HttpServletRequest request) {
+
+        // collect all field errors into one message
+        String errorMessage = ex.getBindingResult()
+                .getFieldErrors()
+                .stream()
+                .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+                .collect(Collectors.joining(", "));
+
+        log.warn("Validation failed: {}", errorMessage);
+
+        ErrorResponse error = new ErrorResponse(
+                HttpStatus.BAD_REQUEST.value(),
+                "VALIDATION_FAILED",
+                errorMessage,
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+    // ─────────────────────────────────────────────
+    // 3. Handle type mismatch  (e.g. /users/abc  where id is Long)
+    // ─────────────────────────────────────────────
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+
+        String message = "Parameter '" + ex.getName() + "' must be of type "
+                + ex.getRequiredType().getSimpleName();
+
+        ErrorResponse error = new ErrorResponse(
+                HttpStatus.BAD_REQUEST.value(),
+                "INVALID_PARAMETER_TYPE",
+                message,
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+    // ─────────────────────────────────────────────
+    // 4. Handle wrong HTTP method  (POST on a GET endpoint)
+    // ─────────────────────────────────────────────
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+
+        ErrorResponse error = new ErrorResponse(
+                HttpStatus.METHOD_NOT_ALLOWED.value(),
+                "METHOD_NOT_ALLOWED",
+                "HTTP method " + ex.getMethod() + " is not supported for this endpoint",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(error);
+    }
+
+    // ─────────────────────────────────────────────
+    // 5. Handle missing required request params
+    // ─────────────────────────────────────────────
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParam(
+            MissingServletRequestParameterException ex, HttpServletRequest request) {
+
+        ErrorResponse error = new ErrorResponse(
+                HttpStatus.BAD_REQUEST.value(),
+                "MISSING_PARAMETER",
+                "Required parameter '" + ex.getParameterName() + "' is missing",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.badRequest().body(error);
+    }
+
+    // ─────────────────────────────────────────────
+    // 6. Catch-all — NEVER let a raw 500 leak to the client
+    // ─────────────────────────────────────────────
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleGenericException(
+            Exception ex, HttpServletRequest request) {
+
+        // log full stack trace here — don't expose it to client
+        log.error("Unhandled exception at {}: ", request.getRequestURI(), ex);
+
+        ErrorResponse error = new ErrorResponse(
+                HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                "INTERNAL_SERVER_ERROR",
+                "An unexpected error occurred. Please try again later.",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.internalServerError().body(error);
+    }
+}
+```
+
+---
+
+## How Handler Resolution Works
+
+Spring picks the **most specific** matching handler. Order of priority:
+
+```
+Exception thrown
+       │
+       ▼
+Is there a handler for the exact exception class?  ──YES──► use it
+       │ NO
+       ▼
+Is there a handler for the parent class?           ──YES──► use it
+       │ NO
+       ▼
+Is there a handler for Exception.class?            ──YES──► use it (catch-all)
+       │ NO
+       ▼
+Spring's default error handling (DefaultHandlerExceptionResolver)
+```
+
+So `BaseException.class` handler catches `ResourceNotFoundException`, `DuplicateResourceException`, etc. — because they all extend `BaseException`. You don't need individual handlers for each one.
+
+---
+
+## Validation Example End to End
+
+```java
+// Request DTO with validation annotations
+public class CreateUserRequest {
+
+    @NotBlank(message = "Name is required")
+    private String name;
+
+    @Email(message = "Must be a valid email")
+    @NotBlank(message = "Email is required")
+    private String email;
+
+    @Min(value = 18, message = "Age must be at least 18")
+    private int age;
+
+    // getters + setters
+}
+
+// Controller
+@PostMapping
+public ResponseEntity<UserResponse> createUser(
+        @Valid @RequestBody CreateUserRequest request) {  // @Valid triggers validation
+    return ResponseEntity.status(HttpStatus.CREATED)
+                         .body(userService.createUser(request));
+}
+```
+
+If client sends `{ "name": "", "email": "not-an-email", "age": 15 }`, the handler returns:
+
+```json
+{
+  "status": 400,
+  "errorCode": "VALIDATION_FAILED",
+  "message": "name: Name is required, email: Must be a valid email, age: Age must be at least 18",
+  "path": "/api/v1/users",
+  "timestamp": "2024-01-15T10:30:00"
+}
+```
+
+---
+
+## Full Architecture Diagram
+
+```
+┌─────────────┐     throws      ┌──────────────────────────┐
+│  Controller │ ──────────────► │                          │
+└─────────────┘                 │   @ControllerAdvice       │
+                                │   GlobalExceptionHandler  │
+┌─────────────┐     throws      │                          │
+│   Service   │ ──────────────► │  @ExceptionHandler(      │
+└─────────────┘                 │    BaseException)         │──► 404 / 409 / 422
+                                │                          │
+┌─────────────┐     throws      │  @ExceptionHandler(      │
+│ Repository  │ ──────────────► │    MethodArgNotValid)    │──► 400 Validation
+└─────────────┘                 │                          │
+                                │  @ExceptionHandler(      │
+                                │    Exception)            │──► 500 fallback
+                                └──────────────────────────┘
+                                              │
+                                              ▼
+                                    ErrorResponse JSON
+                                    {status, errorCode,
+                                     message, path,
+                                     timestamp}
+```
+
+---
+
+## Key Interview Points
+
+- `@ControllerAdvice` is a specialization of `@Component` — it's auto-detected by Spring and applies globally across all controllers.
+- `@RestControllerAdvice` = `@ControllerAdvice` + `@ResponseBody`. Use this if you don't want to annotate each handler method with `@ResponseBody`.
+- Always have a **catch-all** `Exception.class` handler — never let a raw stack trace leak to the client.
+- The exception carries its own status code (`HttpStatus` field in `BaseException`) — the handler is dumb, it just reads it. No if-else logic in the handler.
+- Put exception throwing in the **service layer**, not the controller. Controllers should only handle HTTP concerns.
+- Log the full exception in the catch-all, but return a **sanitized message** to the client — never expose internal stack traces.
     
 </script>
 

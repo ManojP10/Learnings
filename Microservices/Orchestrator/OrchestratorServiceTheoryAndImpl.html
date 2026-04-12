@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+# Orchestrator Service in Microservices
+
+---
+
+## What is an Orchestrator Service?
+
+In a microservice architecture, when a business operation spans **multiple services**, someone has to coordinate the flow. That coordinator is the **Orchestrator**.
+
+```
+Without Orchestrator — Choreography (services talk to each other directly):
+
+OrderService ──► PaymentService ──► InventoryService ──► NotificationService
+     ▲                                                           │
+     └───────────────────────────────────────────────────────────┘
+          (services are tightly coupled to each other)
+
+
+With Orchestrator — Orchestration (one central brain):
+
+                    ┌─────────────────────┐
+                    │  OrderOrchestrator  │  ◄── single brain
+                    └─────────┬───────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+   PaymentService      InventoryService    NotificationService
+   (just executes)     (just executes)     (just executes)
+```
+
+The orchestrator **owns the workflow**. Individual services just do what they're told — they don't know about each other.
+
+---
+
+## Choreography vs Orchestration — Full Comparison
+
+```
+┌─────────────────────┬──────────────────────────┬──────────────────────────┐
+│                     │ Choreography             │ Orchestration            │
+├─────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Control             │ Distributed — each        │ Centralized — one        │
+│                     │ service reacts to events  │ orchestrator drives flow │
+├─────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Coupling            │ Services coupled via      │ Services decoupled from  │
+│                     │ event contracts           │ each other               │
+├─────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Visibility          │ Hard to trace flow        │ Easy to trace — one place│
+├─────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Error Handling      │ Complex — distributed     │ Easier — centralized     │
+├─────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Scalability         │ Scales well               │ Orchestrator can be a    │
+│                     │                           │ bottleneck               │
+├─────────────────────┼──────────────────────────┼──────────────────────────┤
+│ Best for            │ Simple, independent flows │ Complex, multi-step      │
+│                     │                           │ business workflows       │
+└─────────────────────┴──────────────────────────┴──────────────────────────┘
+```
+
+---
+
+## The Saga Pattern — The Foundation of Orchestration
+
+Long-running distributed transactions can't use a single DB transaction (each service has its own DB). The **Saga pattern** solves this by breaking the transaction into a sequence of local transactions, each with a **compensating transaction** for rollback.
+
+```
+Happy Path (all succeed):
+
+Order Created
+     │
+     ▼
+Payment Reserved ──────────────────────────────────► Payment Confirmed
+     │
+     ▼
+Inventory Reserved ────────────────────────────────► Inventory Deducted
+     │
+     ▼
+Notification Sent ─────────────────────────────────► Order Confirmed
+
+
+Failure Path (inventory fails → compensate backwards):
+
+Order Created
+     │
+     ▼
+Payment Reserved ──────────────────────────► COMPENSATE: Payment Released
+     │
+     ▼
+Inventory Reserved ──► FAILS
+     │
+     ▼
+Rollback triggered ──► Orchestrator calls compensation in reverse order
+```
+
+Every step has a **compensating action**:
+
+```
+Forward Action          Compensating Action
+──────────────────────────────────────────
+Reserve Payment    ◄──► Release Payment
+Reserve Inventory  ◄──► Release Inventory
+Send Notification  ◄──► Send Cancellation Email
+Create Shipment    ◄──► Cancel Shipment
+```
+
+---
+
+## Implementation
+
+### Project Structure
+
+```
+orchestrator-service/
+├── src/main/java/com/example/orchestrator/
+│   ├── OrchestratorApplication.java
+│   ├── config/
+│   │   └── WebClientConfig.java
+│   ├── dto/
+│   │   ├── OrderRequest.java
+│   │   ├── OrderResponse.java
+│   │   ├── PaymentRequest.java
+│   │   ├── PaymentResponse.java
+│   │   ├── InventoryRequest.java
+│   │   └── InventoryResponse.java
+│   ├── enums/
+│   │   └── OrderStatus.java
+│   ├── service/
+│   │   ├── OrchestratorService.java
+│   │   ├── PaymentClient.java
+│   │   └── InventoryClient.java
+│   └── controller/
+│       └── OrchestratorController.java
+└── src/main/resources/
+    └── application.yml
+```
+
+---
+
+### Step 1: DTOs
+
+```java
+// OrderRequest.java
+public class OrderRequest {
+    private Long   orderId;
+    private Long   userId;
+    private Long   productId;
+    private int    quantity;
+    private double amount;
+    // getters + setters
+}
+
+// OrderResponse.java
+public class OrderResponse {
+    private Long        orderId;
+    private OrderStatus status;
+    private String      message;
+    // getters + setters
+}
+
+// PaymentRequest.java
+public class PaymentRequest {
+    private Long   orderId;
+    private Long   userId;
+    private double amount;
+    // getters + setters
+}
+
+// PaymentResponse.java
+public class PaymentResponse {
+    private Long          orderId;
+    private PaymentStatus status;   // APPROVED / REJECTED
+    // getters + setters
+}
+
+// InventoryRequest.java
+public class InventoryRequest {
+    private Long orderId;
+    private Long productId;
+    private int  quantity;
+    // getters + setters
+}
+
+// InventoryResponse.java
+public class InventoryResponse {
+    private Long            orderId;
+    private InventoryStatus status;  // AVAILABLE / UNAVAILABLE
+    // getters + setters
+}
+
+// enums
+public enum OrderStatus     { CREATED, CONFIRMED, CANCELLED }
+public enum PaymentStatus   { APPROVED, REJECTED }
+public enum InventoryStatus { AVAILABLE, UNAVAILABLE }
+```
+
+---
+
+### Step 2: WebClient Config
+
+```java
+@Configuration
+public class WebClientConfig {
+
+    @Bean
+    public WebClient paymentWebClient(
+            @Value("${services.payment.url}") String url) {
+        return WebClient.builder()
+                .baseUrl(url)
+                .defaultHeader(HttpHeaders.CONTENT_TYPE,
+                               MediaType.APPLICATION_JSON_VALUE)
+                .build();
+    }
+
+    @Bean
+    public WebClient inventoryWebClient(
+            @Value("${services.inventory.url}") String url) {
+        return WebClient.builder()
+                .baseUrl(url)
+                .defaultHeader(HttpHeaders.CONTENT_TYPE,
+                               MediaType.APPLICATION_JSON_VALUE)
+                .build();
+    }
+}
+```
+
+---
+
+### Step 3: Service Clients
+
+```java
+// PaymentClient.java
+@Service
+public class PaymentClient {
+
+    private final WebClient paymentWebClient;
+
+    public PaymentClient(WebClient paymentWebClient) {
+        this.paymentWebClient = paymentWebClient;
+    }
+
+    // ── Forward: reserve payment
+    public Mono<PaymentResponse> reservePayment(OrderRequest order) {
+        PaymentRequest request = new PaymentRequest();
+        request.setOrderId(order.getOrderId());
+        request.setUserId(order.getUserId());
+        request.setAmount(order.getAmount());
+
+        return paymentWebClient.post()
+                .uri("/payments/reserve")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(PaymentResponse.class);
+    }
+
+    // ── Compensate: release payment if downstream fails
+    public Mono<Void> releasePayment(Long orderId) {
+        return paymentWebClient.post()
+                .uri("/payments/release/" + orderId)
+                .retrieve()
+                .bodyToMono(Void.class);
+    }
+}
+
+// InventoryClient.java
+@Service
+public class InventoryClient {
+
+    private final WebClient inventoryWebClient;
+
+    public InventoryClient(WebClient inventoryWebClient) {
+        this.inventoryWebClient = inventoryWebClient;
+    }
+
+    // ── Forward: reserve inventory
+    public Mono<InventoryResponse> reserveInventory(OrderRequest order) {
+        InventoryRequest request = new InventoryRequest();
+        request.setOrderId(order.getOrderId());
+        request.setProductId(order.getProductId());
+        request.setQuantity(order.getQuantity());
+
+        return inventoryWebClient.post()
+                .uri("/inventory/reserve")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(InventoryResponse.class);
+    }
+
+    // ── Compensate: release inventory if downstream fails
+    public Mono<Void> releaseInventory(Long orderId) {
+        return inventoryWebClient.post()
+                .uri("/inventory/release/" + orderId)
+                .retrieve()
+                .bodyToMono(Void.class);
+    }
+}
+```
+
+---
+
+### Step 4: The Orchestrator Service (Core Logic)
+
+```java
+@Service
+@Slf4j
+public class OrchestratorService {
+
+    private final PaymentClient   paymentClient;
+    private final InventoryClient inventoryClient;
+
+    public OrchestratorService(PaymentClient paymentClient,
+                                InventoryClient inventoryClient) {
+        this.paymentClient   = paymentClient;
+        this.inventoryClient = inventoryClient;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Main orchestration flow
+    // ─────────────────────────────────────────────────────────────
+    public Mono<OrderResponse> processOrder(OrderRequest order) {
+
+        log.info("Starting order saga for orderId={}", order.getOrderId());
+
+        return step1_reservePayment(order)
+                .flatMap(paymentResponse -> step2_reserveInventory(order, paymentResponse))
+                .map(inventoryResponse -> buildSuccess(order))
+                .onErrorResume(ex -> handleFailure(order, ex));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Step 1: Reserve Payment
+    // ─────────────────────────────────────────────────────────────
+    private Mono<PaymentResponse> step1_reservePayment(OrderRequest order) {
+        log.info("Step 1: Reserving payment for orderId={}", order.getOrderId());
+
+        return paymentClient.reservePayment(order)
+                .flatMap(response -> {
+                    if (response.getStatus() == PaymentStatus.REJECTED) {
+                        // payment rejected — fail immediately, no compensation needed
+                        return Mono.error(
+                            new OrderProcessingException("Payment rejected for orderId="
+                                + order.getOrderId())
+                        );
+                    }
+                    log.info("Step 1 SUCCESS: Payment reserved for orderId={}", order.getOrderId());
+                    return Mono.just(response);
+                });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Step 2: Reserve Inventory (payment already reserved)
+    // ─────────────────────────────────────────────────────────────
+    private Mono<InventoryResponse> step2_reserveInventory(
+            OrderRequest order, PaymentResponse paymentResponse) {
+
+        log.info("Step 2: Reserving inventory for orderId={}", order.getOrderId());
+
+        return inventoryClient.reserveInventory(order)
+                .flatMap(response -> {
+                    if (response.getStatus() == InventoryStatus.UNAVAILABLE) {
+                        // inventory unavailable — compensate payment first, then fail
+                        log.warn("Step 2 FAILED: Inventory unavailable. Compensating payment...");
+                        return compensate_releasePayment(order)
+                                .then(Mono.error(
+                                    new OrderProcessingException("Inventory unavailable for orderId="
+                                        + order.getOrderId())
+                                ));
+                    }
+                    log.info("Step 2 SUCCESS: Inventory reserved for orderId={}", order.getOrderId());
+                    return Mono.just(response);
+                });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Compensation: release payment
+    // ─────────────────────────────────────────────────────────────
+    private Mono<Void> compensate_releasePayment(OrderRequest order) {
+        log.info("COMPENSATING: Releasing payment for orderId={}", order.getOrderId());
+        return paymentClient.releasePayment(order.getOrderId())
+                .doOnSuccess(v ->
+                    log.info("COMPENSATION SUCCESS: Payment released for orderId={}", 
+                             order.getOrderId()))
+                .doOnError(e ->
+                    log.error("COMPENSATION FAILED: Could not release payment for orderId={}", 
+                              order.getOrderId(), e));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Build responses
+    // ─────────────────────────────────────────────────────────────
+    private OrderResponse buildSuccess(OrderRequest order) {
+        log.info("Order saga COMPLETED for orderId={}", order.getOrderId());
+        OrderResponse response = new OrderResponse();
+        response.setOrderId(order.getOrderId());
+        response.setStatus(OrderStatus.CONFIRMED);
+        response.setMessage("Order confirmed successfully");
+        return response;
+    }
+
+    private Mono<OrderResponse> handleFailure(OrderRequest order, Throwable ex) {
+        log.error("Order saga FAILED for orderId={}: {}", order.getOrderId(), ex.getMessage());
+        OrderResponse response = new OrderResponse();
+        response.setOrderId(order.getOrderId());
+        response.setStatus(OrderStatus.CANCELLED);
+        response.setMessage("Order cancelled: " + ex.getMessage());
+        return Mono.just(response);
+    }
+}
+```
+
+---
+
+### Step 5: Controller
+
+```java
+@RestController
+@RequestMapping("/api/v1/orders")
+@Slf4j
+public class OrchestratorController {
+
+    private final OrchestratorService orchestratorService;
+
+    public OrchestratorController(OrchestratorService orchestratorService) {
+        this.orchestratorService = orchestratorService;
+    }
+
+    @PostMapping("/process")
+    public Mono<ResponseEntity<OrderResponse>> processOrder(
+            @RequestBody OrderRequest request) {
+
+        log.info("Received order request: orderId={}", request.getOrderId());
+
+        return orchestratorService.processOrder(request)
+                .map(response -> {
+                    HttpStatus status = response.getStatus() == OrderStatus.CONFIRMED
+                            ? HttpStatus.OK
+                            : HttpStatus.UNPROCESSABLE_ENTITY;
+                    return ResponseEntity.status(status).body(response);
+                });
+    }
+}
+```
+
+---
+
+### Step 6: application.yml
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: orchestrator-service
+
+services:
+  payment:
+    url: http://payment-service:8081
+  inventory:
+    url: http://inventory-service:8082
+
+logging:
+  level:
+    com.example.orchestrator: DEBUG
+```
+
+---
+
+## Full Flow Diagram
+
+```
+Client
+  │
+  │  POST /api/v1/orders/process
+  ▼
+OrchestratorController
+  │
+  ▼
+OrchestratorService.processOrder()
+  │
+  ├──► Step 1: PaymentClient.reservePayment()
+  │         │
+  │         ├── APPROVED ──► continue to Step 2
+  │         └── REJECTED ──► return CANCELLED (no compensation needed)
+  │
+  ├──► Step 2: InventoryClient.reserveInventory()
+  │         │
+  │         ├── AVAILABLE ──► return CONFIRMED ✅
+  │         └── UNAVAILABLE
+  │                  │
+  │                  ▼
+  │           Compensate: PaymentClient.releasePayment()
+  │                  │
+  │                  ▼
+  │           return CANCELLED ❌
+  │
+  ▼
+OrderResponse { status: CONFIRMED | CANCELLED }
+```
+
+---
+
+## Adding Resilience with Retry & Circuit Breaker
+
+```java
+// pom.xml dependency
+// spring-cloud-starter-circuitbreaker-reactor-resilience4j
+
+@Service
+public class PaymentClient {
+
+    private final WebClient           paymentWebClient;
+    private final CircuitBreakerFactory cbFactory;
+
+    // ── With Retry + Circuit Breaker + Timeout + Fallback
+    public Mono<PaymentResponse> reservePayment(OrderRequest order) {
+        return paymentWebClient.post()
+                .uri("/payments/reserve")
+                .bodyValue(buildRequest(order))
+                .retrieve()
+                .bodyToMono(PaymentResponse.class)
+
+                // retry up to 3 times with 1s delay
+                .retryWhen(Retry.fixedDelay(3, Duration.ofSeconds(1))
+                        .filter(ex -> ex instanceof WebClientResponseException.ServiceUnavailable))
+
+                // timeout after 5 seconds
+                .timeout(Duration.ofSeconds(5))
+
+                // circuit breaker
+                .transformDeferred(CircuitBreakerOperator.of(
+                        CircuitBreaker.ofDefaults("paymentService")))
+
+                // fallback if all fails
+                .onErrorReturn(buildRejectedResponse(order.getOrderId()));
+    }
+
+    private PaymentResponse buildRejectedResponse(Long orderId) {
+        PaymentResponse r = new PaymentResponse();
+        r.setOrderId(orderId);
+        r.setStatus(PaymentStatus.REJECTED);
+        return r;
+    }
+}
+```
+
+---
+
+## Kafka-Based Orchestrator (Async Version)
+
+For high-throughput scenarios, the orchestrator publishes and consumes Kafka events instead of making synchronous HTTP calls.
+
+```java
+@Service
+@Slf4j
+public class KafkaOrchestratorService {
+
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+
+    // ── Step 1: publish payment request event
+    public void startOrderSaga(OrderRequest order) {
+        log.info("Publishing PaymentRequestEvent for orderId={}", order.getOrderId());
+        kafkaTemplate.send("payment-request", order.getOrderId().toString(),
+                           buildPaymentEvent(order));
+    }
+
+    // ── Step 2: consume payment result, decide next step
+    @KafkaListener(topics = "payment-response", groupId = "orchestrator-group")
+    public void onPaymentResponse(PaymentResponse response) {
+        if (response.getStatus() == PaymentStatus.APPROVED) {
+            log.info("Payment approved, publishing InventoryRequestEvent");
+            kafkaTemplate.send("inventory-request", 
+                               response.getOrderId().toString(),
+                               buildInventoryEvent(response));
+        } else {
+            log.warn("Payment rejected, cancelling order");
+            kafkaTemplate.send("order-cancelled",
+                               response.getOrderId().toString(),
+                               buildCancelEvent(response));
+        }
+    }
+
+    // ── Step 3: consume inventory result, finalize
+    @KafkaListener(topics = "inventory-response", groupId = "orchestrator-group")
+    public void onInventoryResponse(InventoryResponse response) {
+        if (response.getStatus() == InventoryStatus.AVAILABLE) {
+            log.info("Inventory available, confirming order");
+            kafkaTemplate.send("order-confirmed",
+                               response.getOrderId().toString(),
+                               buildConfirmEvent(response));
+        } else {
+            log.warn("Inventory unavailable, compensating payment");
+            // trigger compensation
+            kafkaTemplate.send("payment-release",
+                               response.getOrderId().toString(),
+                               buildReleaseEvent(response));
+            kafkaTemplate.send("order-cancelled",
+                               response.getOrderId().toString(),
+                               buildCancelEvent(response));
+        }
+    }
+}
+```
+
+```
+Kafka Topic Flow:
+
+order-request ──► [Orchestrator] ──► payment-request
+                                           │
+                       payment-response ◄──┘
+                           │
+                    [Orchestrator]
+                           │
+                    APPROVED ──► inventory-request
+                    REJECTED ──► order-cancelled
+                                       │
+                    inventory-response ◄┘
+                           │
+                    [Orchestrator]
+                           │
+                    AVAILABLE   ──► order-confirmed
+                    UNAVAILABLE ──► payment-release ──► order-cancelled
+```
+
+---
+
+## Important Interview Questions & Answers
+
+---
+
+**Q1. What is the difference between Orchestration and Choreography?**
+
+In choreography, services react to events published by each other — there's no central coordinator. Each service knows what to do when it receives an event. In orchestration, a dedicated orchestrator service drives the entire workflow, calling each service in sequence and handling the results. Choreography is more decoupled but harder to trace. Orchestration is easier to debug and reason about but introduces a central coordinator that can become a bottleneck.
+
+---
+
+**Q2. What is the Saga pattern and why is it needed?**
+
+In a microservice architecture, each service has its own database. You can't use a single ACID transaction across multiple services. The Saga pattern breaks a distributed transaction into a sequence of local transactions. Each local transaction updates its own DB and either publishes an event or calls the next step. If any step fails, the saga executes **compensating transactions** in reverse order to undo the completed steps. There are two implementations — choreography-based and orchestration-based sagas.
+
+---
+
+**Q3. What is a compensating transaction? Give an example.**
+
+A compensating transaction is the undo operation for a completed step in a saga. Unlike a database rollback, it's a business-level undo. For example, if step 1 reserved payment and step 2 (inventory) fails, the compensating transaction for step 1 is to release/refund the payment. The key difference from a DB rollback: compensating transactions don't undo the original transaction — they create a new transaction that logically reverses the effect.
+
+---
+
+**Q4. What happens if the orchestrator itself crashes mid-saga?**
+
+This is the critical question. Solutions:
+
+```
+1. Persist saga state to DB before each step:
+   sagaRepository.save(new SagaState(orderId, "PAYMENT_RESERVED"));
+
+2. On restart, query incomplete sagas and resume from last saved step.
+
+3. Use idempotency keys on each service call — so replaying a step
+   doesn't double-charge or double-reserve.
+
+4. Use a dedicated saga framework like Axon, Temporal, or Conductor
+   which persists saga state automatically.
+```
+
+---
+
+**Q5. What is idempotency and why is it critical in orchestration?**
+
+Idempotency means calling the same operation multiple times produces the same result as calling it once. In orchestration, if the orchestrator retries a failed step, the downstream service must handle duplicate calls gracefully. Implementation:
+
+```java
+// Payment service checks idempotency key before processing
+@PostMapping("/payments/reserve")
+public PaymentResponse reserve(@RequestBody PaymentRequest request) {
+    // check if already processed
+    Optional<Payment> existing = paymentRepo.findByOrderId(request.getOrderId());
+    if (existing.isPresent()) {
+        return toResponse(existing.get());   // return same result, don't charge again
+    }
+    // process new payment
+    Payment payment = processPayment(request);
+    return toResponse(paymentRepo.save(payment));
+}
+```
+
+---
+
+**Q6. How do you handle partial failures in a saga?**
+
+```
+Three scenarios:
+
+1. Step fails before completion (network timeout):
+   → Retry with idempotency key
+   → If retry exhausted, run compensations
+
+2. Compensation itself fails:
+   → Retry compensation (compensations must also be idempotent)
+   → If compensation keeps failing → alert + manual intervention
+   → Dead letter queue for failed compensation events
+
+3. Orchestrator crashes mid-flow:
+   → Persist saga state before each step
+   → On restart, resume from last committed state
+```
+
+---
+
+**Q7. What is the difference between a sync and async orchestrator?**
+
+A sync orchestrator (HTTP/REST based) makes blocking calls to each service and waits for responses. Simple to implement, easy to trace, but latency adds up (step1 time + step2 time + step3 time). An async orchestrator (Kafka based) publishes events and reacts to response events. Non-blocking, higher throughput, but harder to debug and track overall flow. For user-facing operations needing immediate response, sync is preferred. For high-throughput background processing, async is preferred.
+
+---
+
+**Q8. What frameworks exist for saga orchestration?**
+
+```
+┌─────────────────┬────────────────────────────────────────────┐
+│ Framework       │ What it does                               │
+├─────────────────┼────────────────────────────────────────────┤
+│ Axon Framework  │ Full CQRS + Event Sourcing + Saga support  │
+│ Temporal        │ Workflow orchestration with durable state   │
+│ Apache Camel    │ Integration patterns including saga        │
+│ Conductor (Netflix)│ Workflow orchestration via UI + API    │
+│ Camunda         │ BPMN-based workflow orchestration          │
+└─────────────────┴────────────────────────────────────────────┘
+```
+
+---
+
+**Q9. How do you ensure exactly-once processing in Kafka-based orchestration?**
+
+```
+Three delivery guarantees in Kafka:
+  at-most-once  — messages may be lost, never duplicated
+  at-least-once — messages never lost, may be duplicated (default)
+  exactly-once  — never lost, never duplicated (hardest)
+
+For exactly-once:
+1. Enable Kafka transactions on producer:
+   spring.kafka.producer.transaction-id-prefix=orchestrator-tx-
+
+2. Use idempotent consumer — check DB before processing:
+   if (sagaRepo.existsByOrderId(orderId)) return; // skip duplicate
+
+3. Consume + process + produce in same Kafka transaction:
+   @Transactional
+   @KafkaListener(...)
+   public void onPaymentResponse(PaymentResponse response) {
+       // DB update + Kafka publish in same transaction
+   }
+```
+
+---
+
+**Q10. What is the outbox pattern and how does it relate to orchestration?**
+
+The outbox pattern solves the dual-write problem — when you need to both update a DB and publish a Kafka event atomically.
+
+```
+Problem:
+  DB update succeeds ──► Kafka publish fails ──► inconsistent state
+
+Outbox solution:
+  1. Write to DB + write to outbox table in SAME DB transaction
+  2. Separate poller reads outbox table and publishes to Kafka
+  3. On publish success, mark outbox record as published
+
+┌─────────────────────────────────┐
+│         Order Service           │
+│                                 │
+│  BEGIN TRANSACTION              │
+│    INSERT INTO orders ...       │
+│    INSERT INTO outbox           │  ← same transaction
+│      (event_type, payload)      │
+│  COMMIT                         │
+│                                 │
+│  [Outbox Poller]                │
+│    SELECT * FROM outbox         │
+│    WHERE published = false      │
+│    kafkaTemplate.send(...)      │
+│    UPDATE outbox SET            │
+│      published = true           │
+└─────────────────────────────────┘
+```
+
+---
+
+## Summary — When to Use What
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Use Sync Orchestration (HTTP) when:                         │
+│  - User is waiting for immediate response                    │
+│  - Flow has 2-4 steps                                        │
+│  - Low to medium traffic                                     │
+│  - Simple compensation logic                                 │
+├──────────────────────────────────────────────────────────────┤
+│  Use Async Orchestration (Kafka) when:                       │
+│  - Background processing, no immediate response needed       │
+│  - High throughput (thousands of orders/sec)                 │
+│  - Steps are long-running (minutes, hours)                   │
+│  - Need event replay / audit trail                           │
+├──────────────────────────────────────────────────────────────┤
+│  Use a Saga Framework (Temporal, Axon) when:                 │
+│  - Very complex workflows (10+ steps)                        │
+│  - Need visual workflow monitoring                           │
+│  - Need automatic saga state persistence                     │
+│  - Team is large and workflow logic must be version-managed  │
+└──────────────────────────────────────────────────────────────┘
+```
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>
