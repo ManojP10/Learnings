@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+Here’s a **complete, structured guide to HTTP status codes + when to use them** — this is exactly how you should remember them for interviews and real-world APIs.
+
+---
+
+# 🌐 HTTP Status Codes (Cheat Sheet)
+
+## ✅ 1xx — Informational (Rare in apps)
+
+These mean: *“Request received, continue…”*
+
+* **100 Continue** → Client can continue sending request
+* **101 Switching Protocols** → Used in WebSockets upgrade
+
+👉 Rarely used in normal backend coding
+
+---
+
+## ✅ 2xx — Success (Most important)
+
+* **200 OK** → Request successful (GET, PUT, PATCH)
+* **201 Created** → Resource created (POST)
+* **202 Accepted** → Request accepted, processing later (async)
+* **204 No Content** → Success but no response body (DELETE)
+
+💡 Example:
+
+* Create user → `201`
+* Delete user → `204`
+
+---
+
+## ⚠️ 3xx — Redirection
+
+* **301 Moved Permanently** → URL changed forever
+* **302 Found** → Temporary redirect
+* **304 Not Modified** → Use cached response
+
+💡 Mostly used in browsers / caching
+
+---
+
+## ❌ 4xx — Client Errors (VERY important)
+
+These mean: *“Client made a mistake”*
+
+---
+
+### 🔹 Common ones:
+
+* **400 Bad Request**
+  → Invalid input / malformed request
+
+* **401 Unauthorized**
+  → Not logged in / missing token
+
+* **403 Forbidden**
+  → Logged in, but no permission
+
+* **404 Not Found**
+  → Resource doesn’t exist
+
+* **405 Method Not Allowed**
+  → Wrong HTTP method (GET vs POST)
+
+---
+
+### 🔹 Validation & API-specific:
+
+* **406 Not Acceptable** → Wrong format requested
+* **408 Request Timeout** → Client took too long
+* **409 Conflict** → Duplicate / conflicting data
+* **410 Gone** → Resource permanently deleted
+* **415 Unsupported Media Type** → Wrong content type (e.g., not JSON)
+* **422 Unprocessable Entity** → Validation failed (very common in REST APIs)
+
+---
+
+## 💥 5xx — Server Errors
+
+These mean: *“Server messed up”*
+
+---
+
+### 🔹 Common ones:
+
+* **500 Internal Server Error**
+  → Generic server crash
+
+* **501 Not Implemented**
+  → Feature not supported
+
+* **502 Bad Gateway**
+  → Upstream service failed
+
+* **503 Service Unavailable**
+  → Server down / overloaded
+
+* **504 Gateway Timeout**
+  → Upstream service took too long
+
+---
+
+# 🧠 Real-World Usage Mapping (IMPORTANT)
+
+## 🔥 CRUD API Mapping
+
+| Operation       | Status Code |
+| --------------- | ----------- |
+| GET success     | 200         |
+| POST create     | 201         |
+| PUT/PATCH       | 200         |
+| DELETE          | 204         |
+| Not found       | 404         |
+| Validation fail | 422         |
+
+---
+
+## 🎯 Authentication Example
+
+| Scenario      | Code |
+| ------------- | ---- |
+| No token      | 401  |
+| Invalid role  | 403  |
+| Login success | 200  |
+
+---
+
+## ⚡ Quick Memory Trick
+
+```
+1xx → Wait
+2xx → Success
+3xx → Redirect
+4xx → Client mistake
+5xx → Server mistake
+```
+
+---
+
+## 🚨 Common Interview Traps
+
+* ❌ Using `200` for everything → BAD practice
+* ❌ Using `500` for validation errors → WRONG
+* ❌ Confusing `401` vs `403`
+
+👉 Golden rule:
+
+* **401 → Who are you?**
+* **403 → I know you, but NO access**
+
+---
+
+## 🏁 Final Tip
+
+In real systems:
+
+* Use **correct status codes + meaningful response body**
+* Combine with:
+
+  * error message
+  * error code
+  * timestamp
+
+---
+
+If you want next level 🔥
+I can give:
+
+* **Spring Boot REST API with proper status codes**
+* OR **interview scenario-based questions (tricky ones)**
+
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>
