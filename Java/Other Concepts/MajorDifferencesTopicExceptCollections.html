@@ -23,7 +23,391 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Java "X vs Y" Interview Questions — Complete Guide
 
+---
+
+## 1. `map()` vs `flatMap()` — Streams
+
+| | `map()` | `flatMap()` |
+|---|---|---|
+| **Input** | One element | One element |
+| **Output** | One result (1-to-1) | Zero or more results (1-to-many) |
+| **Return type** | `Stream<R>` | `Stream<R>` (flattened) |
+| **Nesting** | Can produce `Stream<Stream<R>>` | Always flat `Stream<R>` |
+| **Use when** | Transform each element | Each element produces multiple elements |
+
+```java
+List<String> names = List.of("Manoj", "Kumar");
+
+// map — each element → one result
+names.stream()
+     .map(String::toUpperCase)
+     .collect(toList());
+// ["MANOJ", "KUMAR"]
+
+// flatMap — each element → multiple results (flattened)
+names.stream()
+     .flatMap(name -> Arrays.stream(name.split("")))
+     .collect(toList());
+// ["M","a","n","o","j","K","u","m","a","r"]
+
+// Classic trap — map gives Stream<Stream<Character>>
+names.stream()
+     .map(name -> Arrays.stream(name.split(""))) // ← WRONG if you want flat list
+     .collect(toList());
+// [Stream, Stream]  ← NOT what you wanted
+```
+
+**Golden Rule:**
+```
+If your mapping function returns a List/Stream → use flatMap
+If your mapping function returns a plain value  → use map
+```
+
+---
+
+## 2. `Future` vs `CompletableFuture`
+
+| | `Future` | `CompletableFuture` |
+|---|---|---|
+| **Introduced** | Java 5 | Java 8 |
+| **Get result** | `.get()` — blocks | `.get()` or non-blocking callbacks |
+| **Cancel** | `.cancel()` only | `.cancel()` + `.complete()` manually |
+| **Chaining** | ❌ Not possible | ✅ `.thenApply()`, `.thenCompose()` |
+| **Combining** | ❌ Not possible | ✅ `.allOf()`, `.anyOf()` |
+| **Exception handling** | try/catch on `.get()` | `.exceptionally()`, `.handle()` |
+| **Manual complete** | ❌ | ✅ `.complete(value)` |
+| **Async pipeline** | ❌ | ✅ Full pipeline support |
+
+```java
+// Future — old way, blocking
+ExecutorService exec = Executors.newFixedThreadPool(2);
+Future<String> future = exec.submit(() -> "result");
+
+String val = future.get(); // BLOCKS the calling thread — bad
+
+
+// CompletableFuture — modern, non-blocking pipeline
+CompletableFuture<String> cf = CompletableFuture
+    .supplyAsync(() -> fetchOrder())         // async task
+    .thenApply(order -> transform(order))    // chain — runs after
+    .thenApply(String::toUpperCase)          // chain again
+    .exceptionally(ex -> "fallback");        // handle error
+
+cf.thenAccept(System.out::println);          // non-blocking consumer
+```
+
+```java
+// Combining multiple — only CompletableFuture can do this
+CompletableFuture<Order>    orderFuture   = fetchOrderAsync();
+CompletableFuture<Payment>  paymentFuture = fetchPaymentAsync();
+
+// Wait for BOTH
+CompletableFuture.allOf(orderFuture, paymentFuture).join();
+
+// First one wins
+CompletableFuture.anyOf(orderFuture, paymentFuture).join();
+```
+
+---
+
+## 3. `thenApply()` vs `thenCompose()` — CompletableFuture
+
+This is a very common follow-up to the above.
+
+| | `thenApply()` | `thenCompose()` |
+|---|---|---|
+| **Equivalent to** | `map()` in Streams | `flatMap()` in Streams |
+| **Input** | `T` | `T` |
+| **Function returns** | `U` (plain value) | `CompletableFuture<U>` |
+| **Output** | `CompletableFuture<U>` | `CompletableFuture<U>` (flat) |
+| **Use when** | Simple transform | Next step is also async |
+
+```java
+// thenApply — next step is a plain function
+CompletableFuture<String> cf = CompletableFuture
+    .supplyAsync(() -> "order-123")
+    .thenApply(id -> id.toUpperCase());   // plain String → String
+// Result: "ORDER-123"
+
+
+// thenCompose — next step is ANOTHER async call
+CompletableFuture<Payment> cf = CompletableFuture
+    .supplyAsync(() -> fetchOrder("order-123"))       // async
+    .thenCompose(order -> fetchPayment(order.getId())); // also async
+// Without thenCompose → CompletableFuture<CompletableFuture<Payment>> — WRONG
+```
+
+---
+
+## 4. `Runnable` vs `Callable`
+
+| | `Runnable` | `Callable<V>` |
+|---|---|---|
+| **Returns** | `void` | `V` (any type) |
+| **Throws checked exception** | ❌ No | ✅ Yes |
+| **Used with** | `Thread`, `ExecutorService` | `ExecutorService.submit()` |
+| **Method** | `run()` | `call()` |
+| **Result via Future** | ❌ | ✅ |
+
+```java
+// Runnable — fire and forget, no result
+Runnable r = () -> System.out.println("Running");
+new Thread(r).start();
+
+// Callable — returns result, can throw
+Callable<String> c = () -> {
+    if (error) throw new IOException("failed"); // checked exception OK
+    return "done";
+};
+Future<String> future = executor.submit(c);
+String result = future.get();
+```
+
+---
+
+## 5. `synchronized` vs `ReentrantLock`
+
+| | `synchronized` | `ReentrantLock` |
+|---|---|---|
+| **Type** | Keyword | Class (`java.util.concurrent.locks`) |
+| **Try to acquire** | ❌ Blocks forever | ✅ `tryLock()` with timeout |
+| **Fairness** | ❌ Not guaranteed | ✅ `new ReentrantLock(true)` |
+| **Multiple conditions** | ❌ One (`wait/notify`) | ✅ Multiple `Condition` objects |
+| **Interruptible wait** | ❌ | ✅ `lockInterruptibly()` |
+| **Unlock in finally** | Not needed (auto) | ✅ MANDATORY |
+| **Readability** | Simpler | More verbose |
+
+```java
+// synchronized — simple, auto-release
+public synchronized void increment() {
+    count++;
+}
+
+// ReentrantLock — more control
+private final ReentrantLock lock = new ReentrantLock();
+
+public void increment() {
+    lock.lock();
+    try {
+        count++;
+    } finally {
+        lock.unlock(); // MUST be in finally — always
+    }
+}
+
+// tryLock — only possible with ReentrantLock
+if (lock.tryLock(500, TimeUnit.MILLISECONDS)) {
+    try {
+        // got the lock
+    } finally {
+        lock.unlock();
+    }
+} else {
+    // couldn't get lock — do something else
+}
+```
+
+---
+
+## 6. `wait()` vs `sleep()`
+
+| | `wait()` | `sleep()` |
+|---|---|---|
+| **Class** | `Object` | `Thread` |
+| **Releases lock?** | ✅ Yes | ❌ No |
+| **Called from** | `synchronized` block only | Anywhere |
+| **Woken by** | `notify()` / `notifyAll()` | Timer expiry only |
+| **Use** | Thread communication | Pause execution |
+
+```java
+// wait — releases lock, waits for notify
+synchronized (lock) {
+    while (!condition) {
+        lock.wait();       // releases lock, other threads can enter
+    }
+}
+
+// sleep — holds lock, just pauses
+synchronized (lock) {
+    Thread.sleep(1000);   // holds lock — other threads BLOCKED
+}
+```
+
+---
+
+## 7. `throw` vs `throws`
+
+| | `throw` | `throws` |
+|---|---|---|
+| **Purpose** | Actually throws an exception | Declares a method may throw |
+| **Location** | Inside method body | Method signature |
+| **Followed by** | An exception instance | Exception class name(s) |
+
+```java
+// throws — declaration
+public void readFile(String path) throws IOException, FileNotFoundException {
+
+    if (path == null) {
+        throw new IllegalArgumentException("Path cannot be null"); // throw — actual
+    }
+
+    // ...
+}
+```
+
+---
+
+## 8. `final` vs `finally` vs `finalize()`
+
+| | `final` | `finally` | `finalize()` |
+|---|---|---|---|
+| **Type** | Keyword | Block | Method |
+| **Used for** | Prevent modification | Always-run cleanup code | Pre-GC cleanup (deprecated) |
+| **Applies to** | Variable, method, class | try-catch block | Object class |
+
+```java
+final int MAX = 100;         // final variable — cannot reassign
+// MAX = 200;                // ❌ compile error
+
+final class Singleton {}     // final class — cannot extend
+
+try {
+    riskyOperation();
+} catch (Exception e) {
+    log.error("Error", e);
+} finally {
+    connection.close();      // ALWAYS runs — even if exception thrown
+}
+
+// finalize — deprecated in Java 9, removed in Java 18
+// Don't use it. Use try-with-resources instead.
+```
+
+---
+
+## 9. `String` vs `StringBuilder` vs `StringBuffer`
+
+| | `String` | `StringBuilder` | `StringBuffer` |
+|---|---|---|---|
+| **Mutable?** | ❌ Immutable | ✅ Mutable | ✅ Mutable |
+| **Thread-safe?** | ✅ (immutable) | ❌ Not thread-safe | ✅ Synchronized |
+| **Performance** | Slow for concat loops | ✅ Fast | Slower than StringBuilder |
+| **Use when** | Fixed value | Single-thread string building | Multi-thread string building |
+
+```java
+// String — creates new object every concat → slow in loops
+String s = "";
+for (int i = 0; i < 1000; i++) {
+    s += i;  // 1000 new String objects created — BAD
+}
+
+// StringBuilder — single object, fast
+StringBuilder sb = new StringBuilder();
+for (int i = 0; i < 1000; i++) {
+    sb.append(i);  // same object mutated — GOOD
+}
+String result = sb.toString();
+```
+
+---
+
+## 10. `==` vs `.equals()`
+
+| | `==` | `.equals()` |
+|---|---|---|
+| **Compares** | Reference (memory address) | Content (logical equality) |
+| **For primitives** | ✅ Value comparison | N/A |
+| **For objects** | Reference check | Depends on override |
+
+```java
+String a = new String("hello");
+String b = new String("hello");
+
+a == b          // false — different objects in heap
+a.equals(b)     // true  — same content
+
+// String pool trick
+String x = "hello";
+String y = "hello";
+x == y          // true — same pool reference (interned)
+```
+
+---
+
+## 11. `abstract class` vs `interface`
+
+| | `abstract class` | `interface` |
+|---|---|---|
+| **Extend/Implement** | `extends` (one only) | `implements` (multiple) |
+| **Constructor** | ✅ Yes | ❌ No |
+| **Fields** | Any (instance fields OK) | `public static final` only |
+| **Methods** | Abstract + concrete | Abstract + `default` + `static` |
+| **State** | ✅ Can hold state | ❌ No instance state |
+| **Use when** | Shared base with state | Capability contract |
+
+```java
+// abstract class — IS-A relationship with shared state
+abstract class Animal {
+    private String name;           // instance state ✅
+    Animal(String name) { this.name = name; }
+    abstract void speak();
+    void breathe() { System.out.println("breathing"); } // concrete
+}
+
+// interface — CAN-DO contract
+interface Flyable {
+    void fly();
+    default void land() { System.out.println("landing"); } // default
+}
+
+// Can implement multiple interfaces
+class Eagle extends Animal implements Flyable, Swimmable { ... }
+```
+
+---
+
+## 12. `HashMap` vs `ConcurrentHashMap`
+
+| | `HashMap` | `ConcurrentHashMap` |
+|---|---|---|
+| **Thread-safe?** | ❌ | ✅ |
+| **Null keys/values** | ✅ One null key | ❌ No nulls |
+| **Locking** | None | Segment/bucket level |
+| **Performance** | Fastest (single thread) | Fast (multi-thread) |
+| **Fail behavior** | `ConcurrentModificationException` | Safe iteration |
+
+```java
+// HashMap — unsafe in multi-thread (can cause infinite loop in Java 7, data loss in Java 8+)
+Map<String, Integer> map = new HashMap<>();
+
+// ConcurrentHashMap — safe, fine-grained bucket locking
+Map<String, Integer> map = new ConcurrentHashMap<>();
+map.put("a", 1);  // thread-safe
+map.putIfAbsent("b", 2);  // atomic operation
+```
+
+---
+
+## Quick Revision Cheat Sheet
+
+```
+map()       vs flatMap()          →  1-to-1  vs  1-to-many (flatten)
+thenApply() vs thenCompose()      →  sync fn vs  async fn  (CF version of above)
+Future      vs CompletableFuture  →  blocking vs  pipeline + callbacks
+Runnable    vs Callable           →  no return vs  returns value + throws
+synchronized vs ReentrantLock     →  simple   vs  tryLock + fairness + conditions
+wait()      vs sleep()            →  releases lock vs  holds lock
+throw       vs throws             →  does it  vs  declares it
+final/finally/finalize            →  immutable / cleanup block / deprecated GC hook
+String      vs StringBuilder      →  immutable vs  mutable (use SB in loops)
+==          vs .equals()          →  reference vs  content
+abstract    vs interface          →  IS-A + state vs  CAN-DO contract
+HashMap     vs ConcurrentHashMap  →  fast single vs  safe multi-thread
+```
+
+Each of these is a **standalone interview question** — know the table cold, then back it up with a code example. That combination always scores well. Want me to add `Optional` vs `null`, `checked` vs `unchecked exceptions`, or `Stream` vs `ParallelStream` to this list?
     
 </script>
 

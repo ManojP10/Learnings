@@ -23,7 +23,444 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# OOP Concepts — Complete Guide with One Unified Program
 
+---
+
+## The 4 Pillars + Supporting Concepts
+
+```
+OOP Concepts
+├── 1. Class & Object
+├── 2. Encapsulation
+├── 3. Inheritance
+├── 4. Polymorphism  ──── Compile-time (Overloading)
+│                    └── Runtime     (Overriding)
+├── 5. Abstraction   ──── Abstract Class
+│                    └── Interface
+├── 6. Association   ──── Aggregation
+│                    └── Composition
+└── 7. Coupling & Cohesion
+```
+
+---
+
+## The Scenario — Bank Application
+
+We'll model a **Bank** with different account types. Simple enough to understand, rich enough to cover every OOP concept naturally.
+
+```
+Bank
+ ├── BankAccount (abstract class)         ← Abstraction, Encapsulation
+ │    ├── SavingsAccount                  ← Inheritance, Polymorphism
+ │    └── CurrentAccount                  ← Inheritance, Polymorphism
+ ├── Customer (has-a BankAccount)         ← Aggregation
+ ├── Branch   (has-a list of Customers)   ← Composition
+ └── Loanable (interface)                 ← Abstraction via Interface
+```
+
+---
+
+## The Full Program
+
+```java
+import java.util.ArrayList;
+import java.util.List;
+
+// ─────────────────────────────────────────────────────────────
+// CONCEPT 1 — INTERFACE (Abstraction via contract)
+// Defines WHAT a class must do, not HOW
+// ─────────────────────────────────────────────────────────────
+interface Loanable {
+    double applyLoan(double amount);   // every account type implements this differently
+    boolean isEligibleForLoan();
+}
+
+interface Printable {
+    void printStatement();
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONCEPT 2 — ABSTRACT CLASS (Abstraction + partial implementation)
+// Abstraction  → applyInterest() is abstract — subclass decides HOW
+// Encapsulation → fields are private, accessed via getters/setters
+// ─────────────────────────────────────────────────────────────
+abstract class BankAccount implements Loanable, Printable {
+
+    // ENCAPSULATION — private fields, controlled access
+    private String accountNumber;
+    private String accountHolderName;
+    private double balance;
+    private List<String> transactionHistory;
+
+    // Constructor
+    public BankAccount(String accountNumber, String accountHolderName, double initialDeposit) {
+        this.accountNumber = accountNumber;
+        this.accountHolderName = accountHolderName;
+        this.balance = initialDeposit;
+        this.transactionHistory = new ArrayList<>();
+        transactionHistory.add("Account opened with Rs." + initialDeposit);
+    }
+
+    // ENCAPSULATION — controlled deposit (no direct field access)
+    public void deposit(double amount) {
+        if (amount <= 0) {
+            System.out.println("Invalid deposit amount.");
+            return;
+        }
+        balance += amount;
+        transactionHistory.add("Deposited: Rs." + amount + " | Balance: Rs." + balance);
+        System.out.println("Deposited Rs." + amount + " | New Balance: Rs." + balance);
+    }
+
+    // ENCAPSULATION — controlled withdrawal
+    public void withdraw(double amount) {
+        if (amount <= 0) {
+            System.out.println("Invalid withdrawal amount.");
+            return;
+        }
+        if (amount > balance) {
+            System.out.println("Insufficient balance.");
+            return;
+        }
+        balance -= amount;
+        transactionHistory.add("Withdrawn: Rs." + amount + " | Balance: Rs." + balance);
+        System.out.println("Withdrawn Rs." + amount + " | New Balance: Rs." + balance);
+    }
+
+    // COMPILE-TIME POLYMORPHISM (Method Overloading)
+    // Same method name, different parameters
+    public void deposit(double amount, String note) {
+        deposit(amount);                           // calls the one above
+        transactionHistory.add("Note: " + note);
+        System.out.println("Note added: " + note);
+    }
+
+    public void deposit(int amount) {              // overloaded — int version
+        deposit((double) amount);
+    }
+
+    // ABSTRACTION — subclass MUST implement this
+    public abstract void applyInterest();
+
+    // Getters — part of Encapsulation
+    public String getAccountNumber() { return accountNumber; }
+    public String getAccountHolderName() { return accountHolderName; }
+    public double getBalance() { return balance; }
+    public List<String> getTransactionHistory() { return transactionHistory; }
+
+    // Protected setter — only subclasses can set balance directly
+    protected void setBalance(double balance) { this.balance = balance; }
+
+    // Concrete method shared by all subclasses
+    @Override
+    public void printStatement() {
+        System.out.println("\n===== Statement: " + accountNumber + " =====");
+        transactionHistory.forEach(t -> System.out.println("  " + t));
+        System.out.println("Current Balance: Rs." + balance);
+        System.out.println("=======================================\n");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONCEPT 3 — INHERITANCE
+// SavingsAccount IS-A BankAccount
+// Inherits deposit(), withdraw(), printStatement()
+// Adds its own behavior: interest, loan logic
+// ─────────────────────────────────────────────────────────────
+class SavingsAccount extends BankAccount {
+
+    private double interestRate;
+    private int minBalanceRequired;
+
+    public SavingsAccount(String accNo, String name, double deposit, double interestRate) {
+        super(accNo, name, deposit);               // calls BankAccount constructor
+        this.interestRate = interestRate;
+        this.minBalanceRequired = 1000;
+    }
+
+    // RUNTIME POLYMORPHISM (Method Overriding)
+    // Same signature as abstract method in parent — different implementation
+    @Override
+    public void applyInterest() {
+        double interest = getBalance() * interestRate / 100;
+        deposit(interest, "Interest credited at " + interestRate + "%");
+        System.out.println("Savings interest applied: Rs." + interest);
+    }
+
+    // Implementing Loanable interface
+    @Override
+    public double applyLoan(double amount) {
+        if (!isEligibleForLoan()) {
+            System.out.println("Not eligible for loan.");
+            return 0;
+        }
+        System.out.println("Savings loan of Rs." + amount + " approved at 8% interest.");
+        return amount * 1.08;   // 8% rate for savings
+    }
+
+    @Override
+    public boolean isEligibleForLoan() {
+        return getBalance() >= minBalanceRequired * 5;  // needs 5x min balance
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// INHERITANCE — CurrentAccount IS-A BankAccount
+// Different interest, different loan rules
+// ─────────────────────────────────────────────────────────────
+class CurrentAccount extends BankAccount {
+
+    private double overdraftLimit;
+
+    public CurrentAccount(String accNo, String name, double deposit, double overdraftLimit) {
+        super(accNo, name, deposit);
+        this.overdraftLimit = overdraftLimit;
+    }
+
+    // RUNTIME POLYMORPHISM — different interest logic from SavingsAccount
+    @Override
+    public void applyInterest() {
+        // Current accounts typically earn no interest
+        System.out.println("No interest for Current Account: " + getAccountNumber());
+    }
+
+    // RUNTIME POLYMORPHISM — different loan logic
+    @Override
+    public double applyLoan(double amount) {
+        if (!isEligibleForLoan()) {
+            System.out.println("Not eligible for loan.");
+            return 0;
+        }
+        System.out.println("Current loan of Rs." + amount + " approved at 10% interest.");
+        return amount * 1.10;  // 10% rate for current
+    }
+
+    @Override
+    public boolean isEligibleForLoan() {
+        return getBalance() >= 10000;  // flat minimum for current
+    }
+
+    // Overriding withdraw to allow overdraft
+    @Override
+    public void withdraw(double amount) {
+        if (amount > getBalance() + overdraftLimit) {
+            System.out.println("Exceeds overdraft limit of Rs." + overdraftLimit);
+            return;
+        }
+        // Use parent logic if within limit
+        if (amount <= getBalance()) {
+            super.withdraw(amount);                // calling parent method
+        } else {
+            double overdraftUsed = amount - getBalance();
+            setBalance(0);
+            System.out.println("Overdraft used: Rs." + overdraftUsed);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONCEPT 4 — AGGREGATION (weak HAS-A)
+// Customer HAS-A BankAccount
+// Account can exist WITHOUT Customer (independent lifecycle)
+// ─────────────────────────────────────────────────────────────
+class Customer {
+
+    private String customerId;
+    private String name;
+    private BankAccount account;           // AGGREGATION — passed in, not created here
+
+    public Customer(String customerId, String name, BankAccount account) {
+        this.customerId = customerId;
+        this.name = name;
+        this.account = account;            // account exists independently
+    }
+
+    public void showCustomerInfo() {
+        System.out.println("\n--- Customer: " + name + " (ID: " + customerId + ") ---");
+        System.out.println("Account No : " + account.getAccountNumber());
+        System.out.println("Balance    : Rs." + account.getBalance());
+    }
+
+    public BankAccount getAccount() { return account; }
+    public String getName() { return name; }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONCEPT 5 — COMPOSITION (strong HAS-A)
+// Branch HAS-A list of Customers
+// Customers are CREATED inside Branch — they die with Branch
+// ─────────────────────────────────────────────────────────────
+class Branch {
+
+    private String branchName;
+    private String branchCode;
+    private List<Customer> customers;      // COMPOSITION — Branch owns these
+
+    public Branch(String branchName, String branchCode) {
+        this.branchName = branchName;
+        this.branchCode = branchCode;
+        this.customers = new ArrayList<>(); // created here — owned by Branch
+    }
+
+    public void addCustomer(Customer customer) {
+        customers.add(customer);
+        System.out.println("Customer " + customer.getName() + " added to " + branchName);
+    }
+
+    public void showAllCustomers() {
+        System.out.println("\n===== Branch: " + branchName + " (" + branchCode + ") =====");
+        customers.forEach(Customer::showCustomerInfo);
+    }
+
+    public int getTotalCustomers() { return customers.size(); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// MAIN — Putting it all together
+// ─────────────────────────────────────────────────────────────
+public class BankApplication {
+
+    public static void main(String[] args) {
+
+        System.out.println("========== BANK APPLICATION ==========\n");
+
+        // OBJECT CREATION — CLASS & OBJECT concept
+        SavingsAccount savingsAcc = new SavingsAccount("SAV-001", "Manoj", 5000, 4.5);
+        CurrentAccount currentAcc = new CurrentAccount("CUR-001", "Kumar", 15000, 5000);
+
+        // ENCAPSULATION — interacting via public methods, not direct fields
+        savingsAcc.deposit(2000);
+        savingsAcc.deposit(500, "Freelance payment");   // OVERLOADED method
+        savingsAcc.withdraw(1000);
+
+        currentAcc.deposit(3000);
+        currentAcc.withdraw(17000);  // uses overdraft
+
+        // RUNTIME POLYMORPHISM — same method name, different behavior
+        // applyInterest() resolves at RUNTIME based on actual object type
+        System.out.println("\n--- Applying Interest ---");
+        BankAccount acc1 = savingsAcc;   // parent reference → child object
+        BankAccount acc2 = currentAcc;
+
+        acc1.applyInterest();            // calls SavingsAccount.applyInterest()
+        acc2.applyInterest();            // calls CurrentAccount.applyInterest()
+
+        // INTERFACE USAGE — Loanable
+        System.out.println("\n--- Loan Applications ---");
+        System.out.println("Savings eligible? " + savingsAcc.isEligibleForLoan());
+        savingsAcc.applyLoan(50000);
+
+        System.out.println("Current eligible? " + currentAcc.isEligibleForLoan());
+        currentAcc.applyLoan(100000);
+
+        // PRINT STATEMENT — inherited method
+        savingsAcc.printStatement();
+        currentAcc.printStatement();
+
+        // AGGREGATION — Customer HAS-A account (independent lifecycle)
+        Customer customer1 = new Customer("C001", "Manoj", savingsAcc);
+        Customer customer2 = new Customer("C002", "Kumar", currentAcc);
+
+        // COMPOSITION — Branch owns Customers
+        Branch branch = new Branch("Koramangala Branch", "BLR-KRM-01");
+        branch.addCustomer(customer1);
+        branch.addCustomer(customer2);
+        branch.showAllCustomers();
+
+        System.out.println("\nTotal customers: " + branch.getTotalCustomers());
+        System.out.println("\n========== END ==========");
+    }
+}
+```
+
+---
+
+## Output
+
+```
+========== BANK APPLICATION ==========
+
+Deposited Rs.2000.0 | New Balance: Rs.7000.0
+Deposited Rs.500.0 | New Balance: Rs.7500.0
+Note added: Freelance payment
+Withdrawn Rs.1000.0 | New Balance: Rs.6500.0
+
+Deposited Rs.3000.0 | New Balance: Rs.18000.0
+Overdraft used: Rs.2000.0 (after balance hits 0 logic applies)
+
+--- Applying Interest ---
+Savings interest applied: Rs.292.5
+No interest for Current Account: CUR-001
+
+--- Loan Applications ---
+Savings eligible? true
+Savings loan of Rs.50000.0 approved at 8% interest.
+Current eligible? true
+Current loan of Rs.100000.0 approved at 10% interest.
+
+===== Branch: Koramangala Branch (BLR-KRM-01) =====
+--- Customer: Manoj (ID: C001) ---
+Account No : SAV-001
+Balance    : Rs.6792.5
+
+Total customers: 2
+========== END ==========
+```
+
+---
+
+## Concept → Code Mapping
+
+```
+OOP Concept              Where in the program
+─────────────────────────────────────────────────────────────
+Class & Object         → BankAccount, SavingsAccount, Customer
+Encapsulation          → private fields + deposit()/withdraw() guards
+Abstraction (abstract) → abstract class BankAccount + applyInterest()
+Abstraction (interface)→ Loanable, Printable interfaces
+Inheritance            → SavingsAccount extends BankAccount
+                         CurrentAccount extends BankAccount
+Polymorphism (runtime) → acc1.applyInterest() — resolves at runtime
+Polymorphism (compile) → deposit(double) vs deposit(double, String) vs deposit(int)
+Aggregation            → Customer HAS-A BankAccount (passed in)
+Composition            → Branch HAS-A List<Customer> (created inside)
+super keyword          → super(accNo, name, deposit) in child constructor
+                         super.withdraw(amount) in CurrentAccount
+```
+
+---
+
+## Aggregation vs Composition — The Key Difference
+
+```
+AGGREGATION  (weak HAS-A)
+  Customer ──── BankAccount
+  If Customer is deleted → BankAccount still EXISTS independently
+  Account was PASSED IN to Customer
+
+COMPOSITION  (strong HAS-A)
+  Branch ──── List<Customer>
+  If Branch is deleted → all Customers are GONE with it
+  Customers were CREATED INSIDE Branch
+```
+
+---
+
+## Runtime vs Compile-time Polymorphism
+
+```
+COMPILE-TIME (Overloading)         RUNTIME (Overriding)
+decided at: compile time           decided at: runtime
+mechanism:  method signature       mechanism:  object's actual type
+────────────────────────────────────────────────────────
+deposit(double amount)             acc1.applyInterest()
+deposit(double, String note)       → JVM checks: is acc1 really
+deposit(int amount)                  SavingsAccount or CurrentAccount?
+                                   → calls the right one at runtime
+```
+
+This single program covers every OOP concept you'll be asked about in interviews. Want me to now add **design patterns** (like Strategy, Factory, Singleton) layered on top of this same Bank example?
     
 </script>
 

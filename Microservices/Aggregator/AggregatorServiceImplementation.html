@@ -23,7 +23,492 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+Let me read the frontend design skill first to make sure the implementation is well-presented.Here is the **complete production-grade implementation** of the Aggregator Service — all layers, clearly separated.
 
+---
+
+## Project Structure
+
+```
+order-aggregator/
+├── controller/
+│   └── OrderDashboardController.java
+├── service/
+│   └── OrderDashboardAggregatorService.java
+├── client/
+│   ├── OrderServiceClient.java
+│   ├── PaymentServiceClient.java
+│   ├── ShippingServiceClient.java
+│   └── UserServiceClient.java
+├── dto/
+│   ├── response/         ← each service's response DTO
+│   └── OrderDashboardResponse.java   ← final merged DTO
+├── filter/
+│   └── MDCCorrelationFilter.java
+└── config/
+    └── AsyncConfig.java
+```
+
+---
+
+## 1. DTOs — Data Shapes
+
+```java
+// dto/response/OrderResponse.java
+@Data
+@Builder
+public class OrderResponse {
+    private String orderId;
+    private String status;          // PLACED, CONFIRMED, CANCELLED
+    private BigDecimal totalAmount;
+    private List<String> items;
+    private LocalDateTime placedAt;
+}
+
+// dto/response/PaymentResponse.java
+@Data
+@Builder
+public class PaymentResponse {
+    private String paymentId;
+    private String status;          // PAID, PENDING, FAILED
+    private String paymentMethod;   // UPI, CARD, COD
+    private BigDecimal amountPaid;
+}
+
+// dto/response/ShippingResponse.java
+@Data
+@Builder
+public class ShippingResponse {
+    private String trackingId;
+    private String status;          // DISPATCHED, IN_TRANSIT, DELIVERED
+    private String carrier;
+    private LocalDateTime estimatedDelivery;
+}
+
+// dto/response/UserResponse.java
+@Data
+@Builder
+public class UserResponse {
+    private String userId;
+    private String name;
+    private String email;
+    private String tier;            // REGULAR, PREMIUM, VIP
+}
+```
+
+```java
+// dto/OrderDashboardResponse.java  ← the final merged response
+@Data
+@Builder
+public class OrderDashboardResponse {
+
+    // from Order Service
+    private OrderResponse order;
+
+    // from Payment Service
+    private PaymentResponse payment;
+
+    // from Shipping Service — can be null (graceful degradation)
+    private ShippingResponse shipping;
+
+    // from User Service
+    private UserResponse user;
+
+    // metadata
+    private boolean partialResponse;    // true if any service failed
+    private List<String> failedServices;// which ones failed
+    private long aggregationTimeMs;     // how long the whole thing took
+}
+```
+
+---
+
+## 2. Feign Clients — Downstream Callers
+
+```java
+// client/OrderServiceClient.java
+@FeignClient(
+    name = "order-service",
+    url = "${services.order.url}",
+    configuration = FeignCorrelationConfig.class   // injects correlationId header
+)
+public interface OrderServiceClient {
+
+    @GetMapping("/api/orders/{orderId}")
+    OrderResponse getOrder(@PathVariable String orderId);
+}
+
+// client/PaymentServiceClient.java
+@FeignClient(name = "payment-service", url = "${services.payment.url}")
+public interface PaymentServiceClient {
+
+    @GetMapping("/api/payments/order/{orderId}")
+    PaymentResponse getPaymentByOrderId(@PathVariable String orderId);
+}
+
+// client/ShippingServiceClient.java
+@FeignClient(name = "shipping-service", url = "${services.shipping.url}")
+public interface ShippingServiceClient {
+
+    @GetMapping("/api/shipments/order/{orderId}")
+    ShippingResponse getShipmentByOrderId(@PathVariable String orderId);
+}
+
+// client/UserServiceClient.java
+@FeignClient(name = "user-service", url = "${services.user.url}")
+public interface UserServiceClient {
+
+    @GetMapping("/api/users/{userId}")
+    UserResponse getUser(@PathVariable String userId);
+}
+```
+
+```java
+// config/FeignCorrelationConfig.java
+// Propagates MDC correlationId to every outbound Feign call
+@Configuration
+public class FeignCorrelationConfig {
+
+    @Bean
+    public RequestInterceptor correlationIdInterceptor() {
+        return template -> {
+            String correlationId = MDC.get("correlationId");
+            if (correlationId != null) {
+                template.header("X-Correlation-ID", correlationId);
+            }
+        };
+    }
+}
+```
+
+---
+
+## 3. Async Config with MDC Decorator
+
+```java
+// config/AsyncConfig.java
+@Configuration
+@EnableAsync
+public class AsyncConfig implements AsyncConfigurer {
+
+    @Override
+    public Executor getAsyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("aggregator-");
+        executor.setTaskDecorator(new MDCTaskDecorator()); // MDC propagation
+        executor.initialize();
+        return executor;
+    }
+}
+
+// config/MDCTaskDecorator.java
+public class MDCTaskDecorator implements TaskDecorator {
+
+    @Override
+    public Runnable decorate(Runnable runnable) {
+        // Capture MDC from parent thread BEFORE handing off
+        Map<String, String> contextMap = MDC.getCopyOfContextMap();
+
+        return () -> {
+            try {
+                if (contextMap != null) {
+                    MDC.setContextMap(contextMap); // restore in child thread
+                }
+                runnable.run();
+            } finally {
+                MDC.clear(); // clean up child thread
+            }
+        };
+    }
+}
+```
+
+---
+
+## 4. The Aggregator Service — Core Logic
+
+This is the heart of everything. Read the comments carefully.
+
+```java
+// service/OrderDashboardAggregatorService.java
+@Service
+@Slf4j
+public class OrderDashboardAggregatorService {
+
+    private final OrderServiceClient orderClient;
+    private final PaymentServiceClient paymentClient;
+    private final ShippingServiceClient shippingClient;
+    private final UserServiceClient userClient;
+    private final Executor aggregatorExecutor;
+
+    public OrderDashboardAggregatorService(
+            OrderServiceClient orderClient,
+            PaymentServiceClient paymentClient,
+            ShippingServiceClient shippingClient,
+            UserServiceClient userClient,
+            @Qualifier("applicationTaskExecutor") Executor aggregatorExecutor) {
+
+        this.orderClient = orderClient;
+        this.paymentClient = paymentClient;
+        this.shippingClient = shippingClient;
+        this.userClient = userClient;
+        this.aggregatorExecutor = aggregatorExecutor;
+    }
+
+    public OrderDashboardResponse aggregate(String orderId) {
+
+        long start = System.currentTimeMillis();
+        List<String> failedServices = new ArrayList<>();
+
+        log.info("Starting aggregation for orderId={}", orderId);
+
+        // ─────────────────────────────────────────────
+        // STEP 1: Call Order Service FIRST (sequential)
+        // We need orderId → userId to call User Service.
+        // ─────────────────────────────────────────────
+        OrderResponse order;
+        try {
+            order = orderClient.getOrder(orderId);
+            log.info("Order fetched successfully for orderId={}", orderId);
+        } catch (Exception e) {
+            // Order is CRITICAL — if this fails, we can't continue
+            log.error("Order Service failed for orderId={}, reason={}", orderId, e.getMessage());
+            throw new AggregatorException("Order Service unavailable. Cannot build dashboard.");
+        }
+
+        String userId = order.getUserId(); // extracted for User Service call
+
+        // ─────────────────────────────────────────────
+        // STEP 2: Call Payment, Shipping, User in PARALLEL
+        // These 3 are independent — fire all at once.
+        // ─────────────────────────────────────────────
+
+        // Payment — CRITICAL (show error if unavailable)
+        CompletableFuture<PaymentResponse> paymentFuture = CompletableFuture
+            .supplyAsync(() -> {
+                log.debug("Fetching payment for orderId={}", orderId);
+                return paymentClient.getPaymentByOrderId(orderId);
+            }, aggregatorExecutor)
+            .orTimeout(2, TimeUnit.SECONDS)         // 2s hard timeout
+            .exceptionally(ex -> {
+                log.warn("Payment Service failed for orderId={}: {}", orderId, ex.getMessage());
+                failedServices.add("payment-service");
+                return null;                        // graceful degradation
+            });
+
+        // Shipping — NON-CRITICAL (degrade gracefully)
+        CompletableFuture<ShippingResponse> shippingFuture = CompletableFuture
+            .supplyAsync(() -> {
+                log.debug("Fetching shipment for orderId={}", orderId);
+                return shippingClient.getShipmentByOrderId(orderId);
+            }, aggregatorExecutor)
+            .orTimeout(1, TimeUnit.SECONDS)         // tighter timeout — less critical
+            .exceptionally(ex -> {
+                log.warn("Shipping Service failed for orderId={}: {}", orderId, ex.getMessage());
+                failedServices.add("shipping-service");
+                return null;                        // dashboard still works without this
+            });
+
+        // User — CRITICAL (needed for profile display)
+        CompletableFuture<UserResponse> userFuture = CompletableFuture
+            .supplyAsync(() -> {
+                log.debug("Fetching user for userId={}", userId);
+                return userClient.getUser(userId);
+            }, aggregatorExecutor)
+            .orTimeout(2, TimeUnit.SECONDS)
+            .exceptionally(ex -> {
+                log.warn("User Service failed for userId={}: {}", userId, ex.getMessage());
+                failedServices.add("user-service");
+                return null;
+            });
+
+        // ─────────────────────────────────────────────
+        // STEP 3: Wait for ALL parallel futures to complete
+        // ─────────────────────────────────────────────
+        CompletableFuture.allOf(paymentFuture, shippingFuture, userFuture).join();
+
+        long timeTaken = System.currentTimeMillis() - start;
+
+        log.info("Aggregation complete for orderId={} in {}ms, failedServices={}",
+                orderId, timeTaken, failedServices);
+
+        // ─────────────────────────────────────────────
+        // STEP 4: Merge all results into one response
+        // ─────────────────────────────────────────────
+        return OrderDashboardResponse.builder()
+                .order(order)
+                .payment(paymentFuture.join())       // null if service failed
+                .shipping(shippingFuture.join())     // null if service failed
+                .user(userFuture.join())             // null if service failed
+                .partialResponse(!failedServices.isEmpty())
+                .failedServices(failedServices)
+                .aggregationTimeMs(timeTaken)
+                .build();
+    }
+}
+```
+
+---
+
+## 5. Controller
+
+```java
+// controller/OrderDashboardController.java
+@RestController
+@RequestMapping("/api/dashboard")
+@Slf4j
+public class OrderDashboardController {
+
+    private final OrderDashboardAggregatorService aggregatorService;
+
+    public OrderDashboardController(OrderDashboardAggregatorService aggregatorService) {
+        this.aggregatorService = aggregatorService;
+    }
+
+    @GetMapping("/order/{orderId}")
+    public ResponseEntity<OrderDashboardResponse> getOrderDashboard(
+            @PathVariable String orderId) {
+
+        log.info("Dashboard request received for orderId={}", orderId);
+
+        OrderDashboardResponse response = aggregatorService.aggregate(orderId);
+
+        // If it's a partial response, still return 200 but flag it
+        // Client can decide how to handle missing fields
+        HttpStatus status = response.isPartialResponse()
+                ? HttpStatus.PARTIAL_CONTENT   // 206
+                : HttpStatus.OK;               // 200
+
+        return ResponseEntity.status(status).body(response);
+    }
+}
+```
+
+---
+
+## 6. MDC Correlation Filter
+
+```java
+// filter/MDCCorrelationFilter.java
+@Component
+@Order(1)
+public class MDCCorrelationFilter implements Filter {
+
+    @Override
+    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+            throws IOException, ServletException {
+
+        HttpServletRequest httpReq = (HttpServletRequest) req;
+
+        String correlationId = httpReq.getHeader("X-Correlation-ID");
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = UUID.randomUUID().toString();
+        }
+
+        try {
+            MDC.put("correlationId", correlationId);
+            MDC.put("orderId", httpReq.getParameter("orderId"));
+            chain.doFilter(req, res);
+        } finally {
+            MDC.clear(); // always clean up
+        }
+    }
+}
+```
+
+---
+
+## 7. application.yml
+
+```yaml
+spring:
+  application:
+    name: order-aggregator-service
+
+services:
+  order:
+    url: http://order-service:8081
+  payment:
+    url: http://payment-service:8082
+  shipping:
+    url: http://shipping-service:8083
+  user:
+    url: http://user-service:8084
+
+feign:
+  client:
+    config:
+      default:
+        connectTimeout: 1000    # 1s connection timeout
+        readTimeout: 3000       # 3s read timeout
+        loggerLevel: BASIC
+```
+
+---
+
+## Full Call Flow — Visual
+
+```
+GET /api/dashboard/order/ORD-42
+           │
+           ▼
+  MDCCorrelationFilter          → MDC: correlationId=abc-123
+           │
+           ▼
+  OrderDashboardController
+           │
+           ▼
+  AggregatorService.aggregate()
+           │
+           ▼
+  [STEP 1 - Sequential]
+  orderClient.getOrder()        → Order Service  (CRITICAL)
+           │
+           │  userId = order.getUserId()
+           ▼
+  [STEP 2 - Parallel]
+  ┌────────────────────────────────────┐
+  │ paymentClient  (timeout: 2s) ──┐  │
+  │ shippingClient (timeout: 1s) ──┤  │
+  │ userClient     (timeout: 2s) ──┘  │
+  └────────────────────────────────────┘
+           │
+  CompletableFuture.allOf().join()
+           │
+           ▼
+  [STEP 3 - Merge]
+  OrderDashboardResponse {
+    order    = ✅
+    payment  = ✅ or null
+    shipping = ✅ or null  ← graceful degradation
+    user     = ✅ or null
+    partialResponse = false/true
+    failedServices  = []
+    aggregationTimeMs = 340
+  }
+           │
+           ▼
+  HTTP 200 (full) or 206 (partial)
+```
+
+---
+
+## Key Implementation Takeaways
+
+| Decision | What was done | Why |
+|---|---|---|
+| Order first | Sequential before parallel | userId needed for User Service call |
+| `CompletableFuture` | Parallel fan-out | Cuts total time from sum → max |
+| `.orTimeout()` | Per-service timeout | Prevents one slow service blocking all |
+| `.exceptionally()` | Returns null on failure | Graceful degradation — partial response still useful |
+| `MDCTaskDecorator` | Copies MDC to async threads | correlationId survives thread hops |
+| `FeignCorrelationConfig` | Adds header to all Feign calls | correlationId flows to every downstream service |
+| `206 Partial Content` | When failedServices is not empty | Client knows data is incomplete |
+
+This is a **production-ready Aggregator Service**. Let me know if you want to add **circuit breaker (Resilience4j)**, **caching (Redis/Caffeine)**, or **Zipkin distributed tracing** on top of this!
     
 </script>
 

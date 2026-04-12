@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+# Spring Boot Actuator — Complete Guide
+
+---
+
+## What is Actuator?
+
+Spring Boot Actuator gives you **production-ready monitoring endpoints** out of the box — no code needed. It exposes your application's internals over HTTP (or JMX).
+
+```
+Your App  +  Actuator  =  Live visibility into health, metrics, config, threads, beans...
+```
+
+```
+Without Actuator               With Actuator
+──────────────────             ─────────────────────────────────
+"Is the app healthy?"    →     GET /actuator/health  → {"status":"UP"}
+"What's memory usage?"   →     GET /actuator/metrics/jvm.memory.used
+"What beans are loaded?" →     GET /actuator/beans
+"What's the log level?"  →     GET /actuator/loggers
+"Active DB connections?" →     GET /actuator/metrics/hikaricp.connections
+```
+
+---
+
+## Dependency
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+```
+
+That's it. No other config needed to get started.
+
+---
+
+## All Default Actuator Endpoints
+
+### Full Table
+
+| Endpoint | URL | What it shows |
+|---|---|---|
+| `health` | `/actuator/health` | App health status — UP/DOWN |
+| `info` | `/actuator/info` | App metadata (name, version) |
+| `metrics` | `/actuator/metrics` | List of all metric names |
+| `metrics/{name}` | `/actuator/metrics/jvm.memory.used` | Specific metric value |
+| `beans` | `/actuator/beans` | All Spring beans loaded |
+| `env` | `/actuator/env` | All environment properties |
+| `loggers` | `/actuator/loggers` | Logger levels |
+| `loggers/{name}` | `/actuator/loggers/com.myapp` | Specific logger level |
+| `mappings` | `/actuator/mappings` | All `@RequestMapping` routes |
+| `conditions` | `/actuator/conditions` | Auto-config conditions (why bean loaded/not) |
+| `configprops` | `/actuator/configprops` | All `@ConfigurationProperties` |
+| `threaddump` | `/actuator/threaddump` | JVM thread dump |
+| `heapdump` | `/actuator/heapdump` | JVM heap dump (binary file) |
+| `scheduledtasks` | `/actuator/scheduledtasks` | All `@Scheduled` tasks |
+| `shutdown` | `/actuator/shutdown` | Gracefully shut down app (disabled by default) |
+| `httptrace` | `/actuator/httptrace` | Last 100 HTTP requests |
+| `caches` | `/actuator/caches` | All caches |
+| `flyway` | `/actuator/flyway` | Flyway migration history |
+| `liquibase` | `/actuator/liquibase` | Liquibase migration history |
+
+---
+
+### By Default — What's Exposed vs Hidden
+
+```
+Enabled (but NOT exposed over HTTP by default):
+  beans, conditions, configprops, env, loggers,
+  heapdump, mappings, threaddump, scheduledtasks
+
+Enabled AND exposed over HTTP by default:
+  health, info
+
+Disabled by default (must explicitly enable):
+  shutdown
+```
+
+---
+
+## Configuration — `application.yml`
+
+```yaml
+management:
+  # Expose ALL endpoints over HTTP
+  endpoints:
+    web:
+      exposure:
+        include: "*"          # expose everything
+        # include: health,info,metrics,loggers   ← or cherry-pick
+        # exclude: heapdump,shutdown             ← hide sensitive ones
+
+  # Change base path (default is /actuator)
+  endpoints:
+    web:
+      base-path: /manage      # now: /manage/health
+
+  # Health endpoint — show full details
+  endpoint:
+    health:
+      show-details: always    # always | never | when-authorized
+      show-components: always
+
+  # Enable shutdown endpoint (disabled by default)
+  endpoint:
+    shutdown:
+      enabled: true
+
+  # Expose over different port (common in prod — hide from public)
+  server:
+    port: 8081                # actuator on 8081, app on 8080
+```
+
+---
+
+## Deep Dive — Each Important Endpoint
+
+### 1. `/actuator/health`
+
+```json
+// Basic (default)
+{ "status": "UP" }
+
+// With show-details: always
+{
+  "status": "UP",
+  "components": {
+    "db": {
+      "status": "UP",
+      "details": { "database": "MySQL", "validationQuery": "isValid()" }
+    },
+    "diskSpace": {
+      "status": "UP",
+      "details": { "total": 499963174912, "free": 91300864, "threshold": 10485760 }
+    },
+    "redis": { "status": "UP" },
+    "rabbit": { "status": "UP" }
+  }
+}
+```
+
+Auto-detected components: DB, Redis, Kafka, RabbitMQ, Mongo, Mail — all show up automatically if on classpath.
+
+---
+
+### 2. `/actuator/metrics`
+
+```json
+// GET /actuator/metrics — lists all metric names
+{
+  "names": [
+    "jvm.memory.used",
+    "jvm.memory.max",
+    "jvm.gc.pause",
+    "http.server.requests",
+    "hikaricp.connections.active",
+    "hikaricp.connections.idle",
+    "process.cpu.usage",
+    "system.cpu.usage",
+    "tomcat.threads.busy"
+  ]
+}
+
+// GET /actuator/metrics/http.server.requests
+{
+  "name": "http.server.requests",
+  "measurements": [
+    { "statistic": "COUNT", "value": 142 },
+    { "statistic": "TOTAL_TIME", "value": 8.234 },
+    { "statistic": "MAX", "value": 0.532 }
+  ],
+  "availableTags": [
+    { "tag": "uri",     "values": ["/api/orders", "/api/payments"] },
+    { "tag": "method",  "values": ["GET", "POST"] },
+    { "tag": "status",  "values": ["200", "404", "500"] }
+  ]
+}
+```
+
+---
+
+### 3. `/actuator/loggers` — Change Log Level at Runtime
+
+```bash
+# GET — check current level
+GET /actuator/loggers/com.myapp.service
+
+# Response
+{
+  "configuredLevel": "INFO",
+  "effectiveLevel": "INFO"
+}
+
+# POST — change level at runtime (NO restart needed)
+POST /actuator/loggers/com.myapp.service
+Content-Type: application/json
+{ "configuredLevel": "DEBUG" }
+
+# Now all DEBUG logs in com.myapp.service will appear live
+```
+
+This is **extremely powerful** in production — enable DEBUG for 2 minutes to diagnose, then set back to INFO.
+
+---
+
+### 4. `/actuator/env`
+
+```json
+{
+  "activeProfiles": ["prod"],
+  "propertySources": [
+    {
+      "name": "application.yml",
+      "properties": {
+        "spring.datasource.url": { "value": "jdbc:mysql://localhost/orders" },
+        "server.port": { "value": "8080" }
+      }
+    }
+  ]
+}
+```
+
+---
+
+### 5. `/actuator/info`
+
+Needs configuration to show content:
+
+```yaml
+# application.yml
+info:
+  app:
+    name: Order Service
+    version: 2.1.0
+    description: Handles order lifecycle
+  team:
+    name: Backend Team
+    contact: backend@mycompany.com
+```
+
+```json
+// GET /actuator/info
+{
+  "app": {
+    "name": "Order Service",
+    "version": "2.1.0",
+    "description": "Handles order lifecycle"
+  },
+  "team": {
+    "name": "Backend Team",
+    "contact": "backend@mycompany.com"
+  }
+}
+```
+
+---
+
+## Custom Actuator — 3 Types
+
+```
+Type 1 → Custom Health Indicator     ← extend HealthIndicator
+Type 2 → Custom Metrics              ← use MeterRegistry
+Type 3 → Custom Endpoint             ← use @Endpoint
+```
+
+---
+
+## Custom Type 1 — `HealthIndicator`
+
+Add your own component to the `/actuator/health` response.
+
+### Scenario — Check if external Payment Gateway is reachable
+
+```java
+// health/PaymentGatewayHealthIndicator.java
+import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.stereotype.Component;
+
+@Component("paymentGateway")       // "paymentGateway" is the key in health response
+public class PaymentGatewayHealthIndicator implements HealthIndicator {
+
+    private final PaymentGatewayClient gatewayClient;
+
+    public PaymentGatewayHealthIndicator(PaymentGatewayClient gatewayClient) {
+        this.gatewayClient = gatewayClient;
+    }
+
+    @Override
+    public Health health() {
+        try {
+            boolean reachable = gatewayClient.ping();   // call external system
+
+            if (reachable) {
+                return Health.up()
+                        .withDetail("gateway", "Razorpay")
+                        .withDetail("status", "Reachable")
+                        .withDetail("responseTime", "45ms")
+                        .build();
+            } else {
+                return Health.down()
+                        .withDetail("gateway", "Razorpay")
+                        .withDetail("reason", "Ping failed")
+                        .build();
+            }
+
+        } catch (Exception ex) {
+            return Health.down()
+                    .withDetail("gateway", "Razorpay")
+                    .withDetail("error", ex.getMessage())
+                    .build();
+        }
+    }
+}
+```
+
+```json
+// GET /actuator/health — now includes your component
+{
+  "status": "UP",
+  "components": {
+    "db": { "status": "UP" },
+    "diskSpace": { "status": "UP" },
+    "paymentGateway": {                    ← your custom one
+      "status": "UP",
+      "details": {
+        "gateway": "Razorpay",
+        "status": "Reachable",
+        "responseTime": "45ms"
+      }
+    }
+  }
+}
+```
+
+### Another Example — Check Kafka connectivity
+
+```java
+@Component("kafka")
+public class KafkaHealthIndicator implements HealthIndicator {
+
+    private final KafkaTemplate<String, String> kafkaTemplate;
+
+    @Override
+    public Health health() {
+        try {
+            // Try fetching Kafka metadata
+            kafkaTemplate.getProducerFactory()
+                         .createProducer()
+                         .partitionsFor("order-events");
+
+            return Health.up()
+                    .withDetail("broker", "localhost:9092")
+                    .withDetail("topic", "order-events")
+                    .build();
+
+        } catch (Exception ex) {
+            return Health.down()
+                    .withDetail("broker", "localhost:9092")
+                    .withDetail("error", ex.getMessage())
+                    .build();
+        }
+    }
+}
+```
+
+---
+
+## Custom Type 2 — Custom Metrics with `MeterRegistry`
+
+Add your own business metrics to `/actuator/metrics`.
+
+```java
+// service/OrderService.java
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
+@Service
+@Slf4j
+public class OrderService {
+
+    // Metric instruments
+    private final Counter ordersPlacedCounter;
+    private final Counter ordersCancelledCounter;
+    private final Timer orderProcessingTimer;
+    private final AtomicInteger activeOrders;
+
+    public OrderService(MeterRegistry registry) {
+
+        // Counter — counts occurrences (only goes UP)
+        this.ordersPlacedCounter = Counter.builder("orders.placed")
+                .description("Total number of orders placed")
+                .tag("service", "order-service")   // tags for filtering
+                .register(registry);
+
+        this.ordersCancelledCounter = Counter.builder("orders.cancelled")
+                .description("Total number of orders cancelled")
+                .register(registry);
+
+        // Timer — measures duration + counts calls
+        this.orderProcessingTimer = Timer.builder("orders.processing.time")
+                .description("Time taken to process an order")
+                .register(registry);
+
+        // Gauge — tracks a value that goes UP and DOWN
+        this.activeOrders = new AtomicInteger(0);
+        Gauge.builder("orders.active", activeOrders, AtomicInteger::get)
+                .description("Currently active orders")
+                .register(registry);
+    }
+
+    public Order createOrder(OrderRequest request) {
+
+        activeOrders.incrementAndGet();   // gauge goes up
+
+        // Timer — wraps the logic and measures it
+        return orderProcessingTimer.record(() -> {
+            try {
+                log.info("Creating order for {}", request.getOrderId());
+
+                Order order = processOrder(request);
+
+                ordersPlacedCounter.increment();   // counter goes up
+                return order;
+
+            } finally {
+                activeOrders.decrementAndGet();    // gauge goes down
+            }
+        });
+    }
+
+    public void cancelOrder(String orderId) {
+        ordersCancelledCounter.increment();
+        // cancel logic...
+    }
+}
+```
+
+```bash
+# GET /actuator/metrics/orders.placed
+{
+  "name": "orders.placed",
+  "description": "Total number of orders placed",
+  "measurements": [
+    { "statistic": "COUNT", "value": 342 }
+  ],
+  "availableTags": [
+    { "tag": "service", "values": ["order-service"] }
+  ]
+}
+
+# GET /actuator/metrics/orders.processing.time
+{
+  "name": "orders.processing.time",
+  "measurements": [
+    { "statistic": "COUNT",      "value": 342 },
+    { "statistic": "TOTAL_TIME", "value": 45.23 },
+    { "statistic": "MAX",        "value": 2.1 }
+  ]
+}
+
+# GET /actuator/metrics/orders.active
+{
+  "name": "orders.active",
+  "measurements": [
+    { "statistic": "VALUE", "value": 12 }   ← live count right now
+  ]
+}
+```
+
+---
+
+## Custom Type 3 — `@Endpoint` (Fully Custom Endpoint)
+
+Create a completely new actuator endpoint at `/actuator/your-name`.
+
+### Scenario — `/actuator/order-stats` shows business stats
+
+```java
+// endpoint/OrderStatsEndpoint.java
+import org.springframework.boot.actuate.endpoint.annotation.*;
+import org.springframework.stereotype.Component;
+
+@Component
+@Endpoint(id = "order-stats")      // → /actuator/order-stats
+public class OrderStatsEndpoint {
+
+    private final OrderRepository orderRepository;
+
+    public OrderStatsEndpoint(OrderRepository orderRepository) {
+        this.orderRepository = orderRepository;
+    }
+
+    // @ReadOperation → HTTP GET
+    @ReadOperation
+    public Map<String, Object> getOrderStats() {
+
+        Map<String, Object> stats = new LinkedHashMap<>();
+
+        stats.put("totalOrders",     orderRepository.count());
+        stats.put("placedOrders",    orderRepository.countByStatus("PLACED"));
+        stats.put("deliveredOrders", orderRepository.countByStatus("DELIVERED"));
+        stats.put("cancelledOrders", orderRepository.countByStatus("CANCELLED"));
+        stats.put("totalRevenue",    orderRepository.sumRevenue());
+        stats.put("timestamp",       LocalDateTime.now());
+
+        return stats;
+    }
+
+    // @ReadOperation with parameter → GET /actuator/order-stats/{status}
+    @ReadOperation
+    public Map<String, Object> getOrderStatsByStatus(@Selector String status) {
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("status", status);
+        stats.put("count", orderRepository.countByStatus(status.toUpperCase()));
+        return stats;
+    }
+
+    // @WriteOperation → HTTP POST
+    // Used to trigger an action
+    @WriteOperation
+    public Map<String, String> resetStats() {
+        // e.g., reset daily counters
+        orderRepository.resetDailyCounters();
+        return Map.of(
+            "result", "Stats reset successfully",
+            "timestamp", LocalDateTime.now().toString()
+        );
+    }
+
+    // @DeleteOperation → HTTP DELETE
+    @DeleteOperation
+    public Map<String, String> clearCache(@Selector String cacheKey) {
+        cacheManager.getCache(cacheKey).clear();
+        return Map.of("result", "Cache cleared: " + cacheKey);
+    }
+}
+```
+
+```bash
+# GET /actuator/order-stats
+{
+  "totalOrders": 1240,
+  "placedOrders": 320,
+  "deliveredOrders": 850,
+  "cancelledOrders": 70,
+  "totalRevenue": 4820500.00,
+  "timestamp": "2025-04-12T10:30:00"
+}
+
+# GET /actuator/order-stats/PLACED
+{
+  "status": "PLACED",
+  "count": 320
+}
+
+# POST /actuator/order-stats
+{
+  "result": "Stats reset successfully",
+  "timestamp": "2025-04-12T10:31:00"
+}
+```
+
+---
+
+## Securing Actuator Endpoints
+
+Never expose all endpoints publicly in production.
+
+```java
+// config/ActuatorSecurityConfig.java
+@Configuration
+@EnableWebSecurity
+public class ActuatorSecurityConfig {
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+
+        http.authorizeHttpRequests(auth -> auth
+
+            // Public — health & info only
+            .requestMatchers("/actuator/health").permitAll()
+            .requestMatchers("/actuator/info").permitAll()
+
+            // Internal ops — need ADMIN role
+            .requestMatchers("/actuator/**").hasRole("ADMIN")
+
+            // App endpoints — authenticated users
+            .anyRequest().authenticated()
+        );
+
+        return http.build();
+    }
+}
+```
+
+```yaml
+# application.yml — prod setup
+management:
+  server:
+    port: 8081              # actuator on separate port
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,loggers,order-stats
+        exclude: heapdump,shutdown,env,beans
+  endpoint:
+    health:
+      show-details: when-authorized   # only show details if ADMIN
+```
+
+---
+
+## Full Architecture Picture
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │         Spring Boot Application         │
+                    │                                         │
+                    │  ┌──────────┐    ┌──────────────────┐   │
+                    │  │Your Code │    │  Actuator Layer   │  │
+                    │  │          │    │                   │  │
+                    │  │@Service  │───▶│  /health          │  │
+                    │  │@Repo     │    │  /metrics         │  │
+                    │  │@Controller    │  /loggers         │  │
+                    │  └──────────┘    │  /beans           │  │
+                    │                  │  /env             │  │
+                    │  Custom:         │  /order-stats◀───│──│── your @Endpoint
+                    │  HealthIndicator │  /health◀────────│──│── your HealthIndicator
+                    │  MeterRegistry──▶│  /metrics◀───────│──│── your custom metrics
+                    │                  └───────────────-───┘  │
+                    └─────────────────────────────────────────┘
+                                        │
+                          ┌─────────────┼─────────────┐
+                          ▼             ▼             ▼
+                     Prometheus      Grafana        ELK
+                     (scrapes)       (dashboards)   (logs)
+```
+
+---
+
+## Quick Reference Cheat Sheet
+
+```
+Default endpoints (HTTP exposed)   → health, info
+Enable all                         → include: "*"
+Custom health check                → implement HealthIndicator
+Custom metric (counter)            → Counter.builder("name").register(registry)
+Custom metric (timer)              → Timer.builder("name").register(registry)
+Custom metric (gauge)              → Gauge.builder("name", obj, fn).register(registry)
+Custom endpoint (GET)              → @Endpoint(id="name") + @ReadOperation
+Custom endpoint (POST)             → @WriteOperation
+Custom endpoint (DELETE)           → @DeleteOperation
+Change log level at runtime        → POST /actuator/loggers/{package}
+Secure actuator                    → separate port 8081 + ADMIN role
+```
+
+Want me to go deeper on **Micrometer + Prometheus + Grafana integration** to visualize these metrics on a live dashboard?
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

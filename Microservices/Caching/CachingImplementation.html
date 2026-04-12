@@ -23,7 +23,738 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Caching in Spring Boot — Complete Guide
 
+---
+
+## Why Caching?
+
+```
+Without Cache:                    With Cache:
+─────────────                     ───────────
+Request → DB query (200ms)        Request → Cache HIT (2ms)
+Request → DB query (200ms)        Request → Cache HIT (2ms)
+Request → DB query (200ms)        Request → DB query (200ms) ← only on miss
+```
+
+> Cache sits between your application and the expensive operation (DB, API call, computation) and serves repeated requests from memory.
+
+---
+
+## Caching Libraries / Frameworks Available
+
+```
+Caching Options in Java / Spring Boot
+│
+├── 1. Spring Cache Abstraction     ← unified API, works with any provider
+│
+├── In-Process (Local) Caches
+│   ├── 2. Caffeine                 ← best local cache (recommended)
+│   ├── 3. EhCache                  ← enterprise, supports disk overflow
+│   └── 4. Simple (ConcurrentMap)   ← Spring's built-in, no config needed
+│
+└── Distributed (Remote) Caches
+    ├── 5. Redis                    ← most popular, production standard
+    ├── 6. Hazelcast                ← in-memory data grid
+    └── 7. Memcached                ← simple distributed cache
+```
+
+---
+
+## Comparison Table
+
+| | Caffeine | EhCache | Redis | Hazelcast |
+|---|---|---|---|---|
+| **Type** | Local | Local + Disk | Remote | Remote / Embedded |
+| **Speed** | Fastest | Fast | Fast (network hop) | Fast |
+| **Shared across instances?** | ❌ No | ❌ No | ✅ Yes | ✅ Yes |
+| **Persistence** | ❌ | ✅ Disk | ✅ | ✅ |
+| **TTL support** | ✅ | ✅ | ✅ | ✅ |
+| **Use in prod microservices** | Single instance | Single instance | Multi-instance | Multi-instance |
+| **Setup complexity** | Simple | Medium | Medium | Complex |
+| **Best for** | Single service | Single service + disk | Distributed systems | Distributed + compute |
+
+---
+
+## Spring Cache Abstraction — The Unified API
+
+Spring provides **one set of annotations** that works with ANY cache provider underneath. You swap the provider via config — your code never changes.
+
+```
+Your Code (@Cacheable)
+      │
+      ▼
+Spring Cache Abstraction (CacheManager)
+      │
+      ├──▶ CaffeineCacheManager   (local)
+      ├──▶ RedisCacheManager      (distributed)
+      └──▶ EhCacheCacheManager    (local + disk)
+```
+
+### The 4 Core Cache Annotations
+
+| Annotation | What it does |
+|---|---|
+| `@Cacheable` | Return cached value if exists, else run method + cache result |
+| `@CachePut` | Always run method + update cache with result |
+| `@CacheEvict` | Remove entry from cache |
+| `@Caching` | Group multiple cache operations on one method |
+
+---
+
+## The Scenario — Order Service Cache
+
+We'll implement caching on an **Order Service** with:
+- Caffeine (local cache — fast lookups)
+- Redis (distributed cache — shared across instances)
+- All 4 annotations demonstrated
+
+---
+
+## Implementation 1 — Caffeine Cache (Local)
+
+### Dependencies
+
+```xml
+<!-- Spring Cache -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-cache</artifactId>
+</dependency>
+
+<!-- Caffeine — local in-memory cache -->
+<dependency>
+    <groupId>com.github.ben-manes.caffeine</groupId>
+    <artifactId>caffeine</artifactId>
+</dependency>
+```
+
+### Configuration
+
+```java
+// config/CaffeineCacheConfig.java
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableCaching                      // activates Spring Cache — MUST have this
+public class CaffeineCacheConfig {
+
+    @Bean
+    public CacheManager cacheManager() {
+        CaffeineCacheManager manager = new CaffeineCacheManager();
+
+        // Global default spec for all caches
+        manager.setCaffeine(Caffeine.newBuilder()
+            .maximumSize(500)               // max 500 entries per cache
+            .expireAfterWrite(10, TimeUnit.MINUTES)  // TTL — 10 mins after write
+            .expireAfterAccess(5, TimeUnit.MINUTES)  // evict if not accessed in 5 mins
+            .recordStats()                  // enable hit/miss statistics
+        );
+
+        // Pre-declare cache names
+        manager.setCacheNames(List.of("orders", "users", "products"));
+
+        return manager;
+    }
+}
+```
+
+---
+
+## The DTOs
+
+```java
+// dto/Order.java
+@Data
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class Order {
+    private String orderId;
+    private String status;
+    private String customerId;
+    private BigDecimal amount;
+    private LocalDateTime createdAt;
+}
+
+// dto/OrderRequest.java
+@Data
+@Builder
+public class OrderRequest {
+    private String customerId;
+    private BigDecimal amount;
+    private List<String> items;
+}
+```
+
+---
+
+## The Repository (Simulated DB)
+
+```java
+// repository/OrderRepository.java
+@Repository
+@Slf4j
+public class OrderRepository {
+
+    // Simulated DB — in real app this would be JpaRepository
+    private final Map<String, Order> database = new HashMap<>();
+
+    public Order findById(String orderId) {
+        log.info(">>> DB HIT — fetching order: {}", orderId);  // log to prove cache works
+        simulateDelay(200); // simulate 200ms DB call
+        return database.get(orderId);
+    }
+
+    public List<Order> findByCustomerId(String customerId) {
+        log.info(">>> DB HIT — fetching orders for customer: {}", customerId);
+        simulateDelay(300);
+        return database.values().stream()
+                .filter(o -> o.getCustomerId().equals(customerId))
+                .collect(Collectors.toList());
+    }
+
+    public Order save(Order order) {
+        log.info(">>> DB WRITE — saving order: {}", order.getOrderId());
+        database.put(order.getOrderId(), order);
+        return order;
+    }
+
+    public void deleteById(String orderId) {
+        log.info(">>> DB DELETE — deleting order: {}", orderId);
+        database.remove(orderId);
+    }
+
+    private void simulateDelay(int ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+}
+```
+
+---
+
+## The Service — All 4 Cache Annotations
+
+```java
+// service/OrderService.java
+@Service
+@Slf4j
+public class OrderService {
+
+    private final OrderRepository orderRepository;
+
+    public OrderService(OrderRepository orderRepository) {
+        this.orderRepository = orderRepository;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // @Cacheable — cache the result
+    // key = orderId → cache entry: orders::ORD-001 → Order object
+    // ─────────────────────────────────────────────────────────
+    @Cacheable(
+        value = "orders",               // cache name
+        key = "#orderId",               // cache key — Spring EL expression
+        unless = "#result == null"      // don't cache null results
+    )
+    public Order getOrderById(String orderId) {
+        log.info("Cache MISS — calling DB for orderId={}", orderId);
+        return orderRepository.findById(orderId);
+    }
+
+    // Cache with condition — only cache if amount > 1000
+    @Cacheable(
+        value = "orders",
+        key = "#orderId",
+        condition = "#orderId.startsWith('ORD')",   // only cache ORD-* orders
+        unless = "#result?.amount < 1000"           // don't cache small orders
+    )
+    public Order getOrderByIdConditional(String orderId) {
+        return orderRepository.findById(orderId);
+    }
+
+    // Cache list by customerId
+    @Cacheable(value = "orders", key = "'customer-' + #customerId")
+    public List<Order> getOrdersByCustomer(String customerId) {
+        log.info("Cache MISS — fetching orders for customer={}", customerId);
+        return orderRepository.findByCustomerId(customerId);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // @CachePut — ALWAYS runs method, ALWAYS updates cache
+    // Use for: create, update operations
+    // ─────────────────────────────────────────────────────────
+    @CachePut(
+        value = "orders",
+        key = "#result.orderId"         // key comes from RETURN value
+    )
+    public Order createOrder(OrderRequest request) {
+        log.info("Creating new order for customerId={}", request.getCustomerId());
+
+        Order order = Order.builder()
+                .orderId("ORD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .customerId(request.getCustomerId())
+                .amount(request.getAmount())
+                .status("PLACED")
+                .createdAt(LocalDateTime.now())
+                .build();
+
+        Order saved = orderRepository.save(order);
+        log.info("Order created and cached: {}", saved.getOrderId());
+        return saved;
+    }
+
+    @CachePut(
+        value = "orders",
+        key = "#orderId"                // key comes from method PARAMETER
+    )
+    public Order updateOrderStatus(String orderId, String newStatus) {
+        log.info("Updating order status: orderId={}, status={}", orderId, newStatus);
+
+        Order order = orderRepository.findById(orderId);
+        if (order == null) throw new RuntimeException("Order not found: " + orderId);
+
+        order.setStatus(newStatus);
+        Order updated = orderRepository.save(order);
+
+        log.info("Order updated and cache refreshed: {}", orderId);
+        return updated;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // @CacheEvict — remove from cache
+    // Use for: delete operations, stale data invalidation
+    // ─────────────────────────────────────────────────────────
+    @CacheEvict(
+        value = "orders",
+        key = "#orderId"                // evict specific entry
+    )
+    public void deleteOrder(String orderId) {
+        log.info("Deleting order and evicting from cache: {}", orderId);
+        orderRepository.deleteById(orderId);
+    }
+
+    // Evict ALL entries in the cache
+    @CacheEvict(
+        value = "orders",
+        allEntries = true               // nuclear option — clears entire cache
+    )
+    public void clearAllOrdersCache() {
+        log.info("Entire orders cache cleared");
+    }
+
+    // beforeInvocation = true → evict BEFORE method runs
+    // (default false = evict AFTER method runs successfully)
+    @CacheEvict(
+        value = "orders",
+        key = "#orderId",
+        beforeInvocation = true         // evict even if method throws exception
+    )
+    public void deleteOrderSafely(String orderId) {
+        orderRepository.deleteById(orderId);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // @Caching — multiple cache operations on ONE method
+    // ─────────────────────────────────────────────────────────
+    @Caching(
+        evict = {
+            @CacheEvict(value = "orders",   key = "#orderId"),
+            @CacheEvict(value = "orders",   key = "'customer-' + #customerId")
+        },
+        put = {
+            @CachePut(value = "orders", key = "#orderId + '-archived'")
+        }
+    )
+    public Order archiveOrder(String orderId, String customerId) {
+        log.info("Archiving order: {}", orderId);
+        Order order = orderRepository.findById(orderId);
+        order.setStatus("ARCHIVED");
+        return orderRepository.save(order);
+    }
+}
+```
+
+---
+
+## The Controller
+
+```java
+// controller/OrderController.java
+@RestController
+@RequestMapping("/api/orders")
+@Slf4j
+public class OrderController {
+
+    private final OrderService orderService;
+
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    @GetMapping("/{orderId}")
+    public ResponseEntity<Order> getOrder(@PathVariable String orderId) {
+        long start = System.currentTimeMillis();
+        Order order = orderService.getOrderById(orderId);
+        long time = System.currentTimeMillis() - start;
+        log.info("GET /orders/{} completed in {}ms", orderId, time);
+        return ResponseEntity.ok(order);
+    }
+
+    @GetMapping("/customer/{customerId}")
+    public ResponseEntity<List<Order>> getOrdersByCustomer(
+            @PathVariable String customerId) {
+        return ResponseEntity.ok(orderService.getOrdersByCustomer(customerId));
+    }
+
+    @PostMapping
+    public ResponseEntity<Order> createOrder(@RequestBody OrderRequest request) {
+        Order order = orderService.createOrder(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(order);
+    }
+
+    @PutMapping("/{orderId}/status")
+    public ResponseEntity<Order> updateStatus(
+            @PathVariable String orderId,
+            @RequestParam String status) {
+        return ResponseEntity.ok(orderService.updateOrderStatus(orderId, status));
+    }
+
+    @DeleteMapping("/{orderId}")
+    public ResponseEntity<Void> deleteOrder(@PathVariable String orderId) {
+        orderService.deleteOrder(orderId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/cache/clear")
+    public ResponseEntity<String> clearCache() {
+        orderService.clearAllOrdersCache();
+        return ResponseEntity.ok("Cache cleared");
+    }
+}
+```
+
+---
+
+## Implementation 2 — Redis Cache (Distributed)
+
+For multi-instance microservices — all instances share one Redis.
+
+### Dependencies
+
+```xml
+<!-- Redis -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-cache</artifactId>
+</dependency>
+```
+
+### Configuration
+
+```java
+// config/RedisCacheConfig.java
+@Configuration
+@EnableCaching
+public class RedisCacheConfig {
+
+    @Bean
+    public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory) {
+
+        // Default config — applies to all caches unless overridden
+        RedisCacheConfiguration defaultConfig = RedisCacheConfiguration
+                .defaultCacheConfig()
+                .entryTtl(Duration.ofMinutes(10))           // TTL: 10 minutes
+                .serializeKeysWith(
+                    RedisSerializationContext.SerializationPair
+                        .fromSerializer(new StringRedisSerializer()))
+                .serializeValuesWith(
+                    RedisSerializationContext.SerializationPair
+                        .fromSerializer(new GenericJackson2JsonRedisSerializer()))
+                .disableCachingNullValues();                // don't cache nulls
+
+        // Per-cache TTL overrides
+        Map<String, RedisCacheConfiguration> cacheConfigs = new HashMap<>();
+
+        cacheConfigs.put("orders",    defaultConfig.entryTtl(Duration.ofMinutes(10)));
+        cacheConfigs.put("users",     defaultConfig.entryTtl(Duration.ofMinutes(30)));  // users change rarely
+        cacheConfigs.put("products",  defaultConfig.entryTtl(Duration.ofHours(1)));     // products change rarely
+
+        return RedisCacheManager.builder(connectionFactory)
+                .cacheDefaults(defaultConfig)
+                .withInitialCacheConfigurations(cacheConfigs)
+                .build();
+    }
+}
+```
+
+### `application.yml` for Redis
+
+```yaml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: your_password       # if auth enabled
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 5
+          min-idle: 2
+```
+
+> The `@Cacheable`, `@CachePut`, `@CacheEvict` annotations on `OrderService` stay **exactly the same**. Only the config changes. That's the power of Spring Cache abstraction.
+
+---
+
+## Multi-Level Cache — Caffeine + Redis Together
+
+Best of both worlds: L1 (Caffeine, ultra-fast local) + L2 (Redis, shared across instances).
+
+```
+Request
+   │
+   ▼
+L1 Cache (Caffeine) — hit? → return immediately (2ms)
+   │ miss
+   ▼
+L2 Cache (Redis) — hit? → store in L1 + return (10ms)
+   │ miss
+   ▼
+Database — store in L2 + L1 + return (200ms)
+```
+
+```java
+// service/MultiLevelCacheService.java
+@Service
+@Slf4j
+public class MultiLevelCacheService {
+
+    private final Cache caffeineCache;       // L1
+    private final RedisTemplate<String, Object> redisTemplate;  // L2
+    private final OrderRepository orderRepository;
+
+    private static final Duration REDIS_TTL = Duration.ofMinutes(10);
+    private static final String REDIS_PREFIX = "orders:";
+
+    public MultiLevelCacheService(
+            CacheManager caffeineCacheManager,
+            RedisTemplate<String, Object> redisTemplate,
+            OrderRepository orderRepository) {
+
+        this.caffeineCache = caffeineCacheManager.getCache("orders");
+        this.redisTemplate = redisTemplate;
+        this.orderRepository = orderRepository;
+    }
+
+    public Order getOrder(String orderId) {
+
+        String redisKey = REDIS_PREFIX + orderId;
+
+        // 1. Check L1 — Caffeine
+        Cache.ValueWrapper l1Value = caffeineCache.get(orderId);
+        if (l1Value != null) {
+            log.info("L1 HIT (Caffeine) for orderId={}", orderId);
+            return (Order) l1Value.get();
+        }
+
+        // 2. Check L2 — Redis
+        Order redisOrder = (Order) redisTemplate.opsForValue().get(redisKey);
+        if (redisOrder != null) {
+            log.info("L2 HIT (Redis) for orderId={}", orderId);
+            caffeineCache.put(orderId, redisOrder);   // backfill L1
+            return redisOrder;
+        }
+
+        // 3. DB call
+        log.info("CACHE MISS — DB call for orderId={}", orderId);
+        Order order = orderRepository.findById(orderId);
+
+        if (order != null) {
+            redisTemplate.opsForValue().set(redisKey, order, REDIS_TTL); // store L2
+            caffeineCache.put(orderId, order);                            // store L1
+        }
+
+        return order;
+    }
+
+    public void evict(String orderId) {
+        caffeineCache.evict(orderId);                        // clear L1
+        redisTemplate.delete(REDIS_PREFIX + orderId);        // clear L2
+        log.info("Evicted orderId={} from L1 and L2", orderId);
+    }
+}
+```
+
+---
+
+## Cache Key Strategies
+
+```java
+// Simple key
+@Cacheable(value = "orders", key = "#orderId")
+// → cache key: "orders::ORD-001"
+
+// Composite key
+@Cacheable(value = "orders", key = "#customerId + '-' + #status")
+// → cache key: "orders::CUST-01-PLACED"
+
+// SpEL on object
+@Cacheable(value = "orders", key = "#request.orderId")
+// → cache key: "orders::ORD-001"
+
+// Static prefix + param
+@Cacheable(value = "orders", key = "'customer-' + #customerId")
+// → cache key: "orders::customer-CUST-01"
+
+// Custom KeyGenerator
+@Cacheable(value = "orders", keyGenerator = "customKeyGenerator")
+```
+
+```java
+// Custom KeyGenerator
+@Component("customKeyGenerator")
+public class CustomKeyGenerator implements KeyGenerator {
+
+    @Override
+    public Object generate(Object target, Method method, Object... params) {
+        return target.getClass().getSimpleName()
+               + "_" + method.getName()
+               + "_" + Arrays.toString(params);
+    }
+}
+```
+
+---
+
+## Seeing Cache in Action — Log Output
+
+```
+// First call — cache miss
+Cache MISS — calling DB for orderId=ORD-001
+>>> DB HIT — fetching order: ORD-001          ← DB called
+GET /orders/ORD-001 completed in 203ms
+
+// Second call — cache hit (no DB call at all)
+GET /orders/ORD-001 completed in 2ms          ← served from cache
+
+// After updateOrderStatus — @CachePut refreshes cache
+Updating order status: orderId=ORD-001        ← DB called
+Order updated and cache refreshed: ORD-001    ← cache updated too
+
+// Next get — still fast, cache has fresh data
+GET /orders/ORD-001 completed in 1ms
+
+// After deleteOrder — @CacheEvict removes entry
+Deleting order and evicting from cache: ORD-001
+
+// Next get — cache miss again, goes to DB
+Cache MISS — calling DB for orderId=ORD-001
+>>> DB HIT — fetching order: ORD-001
+```
+
+---
+
+## Full Flow Diagram
+
+```
+GET /api/orders/ORD-001
+        │
+        ▼
+OrderController.getOrder()
+        │
+        ▼
+@Cacheable intercepted by Spring AOP
+        │
+        ├── Cache HIT? ──────────────────────────▶ return cached Order (2ms)
+        │
+        └── Cache MISS
+                │
+                ▼
+        OrderService.getOrderById()    ← actual method runs
+                │
+                ▼
+        OrderRepository.findById()     ← DB call (200ms)
+                │
+                ▼
+        Result stored in cache
+                │
+                ▼
+        Return Order to client
+
+─────────────────────────────────────────────────
+
+POST /api/orders  (createOrder)
+        │
+        ▼
+@CachePut — method ALWAYS runs
+        │
+        ▼
+DB save + result stored in cache
+        │
+        ▼
+Next GET for this orderId → Cache HIT immediately
+
+─────────────────────────────────────────────────
+
+DELETE /api/orders/ORD-001
+        │
+        ▼
+@CacheEvict — entry removed from cache
+        │
+        ▼
+Next GET for this orderId → Cache MISS → DB call
+```
+
+---
+
+## Quick Reference Cheat Sheet
+
+```
+@EnableCaching          → activate caching (on @Configuration class)
+@Cacheable              → read from cache, or call method + store
+@CachePut               → always call method + update cache
+@CacheEvict             → remove from cache
+@Caching                → combine multiple cache ops on one method
+
+key = "#param"          → method parameter as key
+key = "#result.field"   → return value field as key (only in @CachePut)
+key = "'literal-' + #p" → string concat in SpEL
+condition = "..."       → only cache if condition is true
+unless = "..."          → don't cache if condition is true
+allEntries = true       → evict ALL entries in cache name
+
+Caffeine  → local, fastest, single instance
+Redis     → distributed, multi-instance, TTL + persistence
+L1 + L2   → Caffeine (local) + Redis (shared) together
+```
+
+---
+
+## When to Use Which
+
+```
+Single instance service, fast reads   → Caffeine
+Multi-instance microservices          → Redis
+Ultra-low latency + shared state      → Caffeine (L1) + Redis (L2)
+Data that changes rarely              → Long TTL (hours)
+Data that changes often               → Short TTL (seconds/minutes) or @CacheEvict
+Session data                          → Redis
+Computation results                   → Caffeine
+```
+
+Want me to add **cache statistics monitoring via Actuator**, **cache warming on startup**, or **Redis Pub/Sub for cache invalidation across instances**?
     
 </script>
 

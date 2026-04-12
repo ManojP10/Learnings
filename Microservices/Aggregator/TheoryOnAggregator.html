@@ -23,7 +23,242 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Aggregator Service in Microservices
 
+---
+
+## What is an Aggregator Service?
+
+An **Aggregator Service** is a microservice whose **sole job** is to call multiple downstream services, collect their responses, combine/transform them, and return a **single unified response** to the client.
+
+> Think of it as a **coordinator** — it knows *who* has what data, fetches it all, and stitches it together so the client doesn't have to make 5 separate calls.
+
+---
+
+## The Core Problem It Solves
+
+Without an aggregator, the client (mobile app / frontend) has to:
+
+```
+Client  →  calls  →  Order Service
+Client  →  calls  →  Payment Service
+Client  →  calls  →  User Service
+Client  →  calls  →  Inventory Service
+Client  →  calls  →  Shipping Service
+```
+
+**Problems:**
+- Too many round trips → slow UI
+- Client becomes tightly coupled to every service
+- Business logic leaks into the frontend
+- Adding a new service = changing every client
+
+---
+
+## With Aggregator:
+
+```
+Client  →  calls  →  [ Aggregator Service ]
+                            │
+              ┌─────────────┼──────────────┐
+              ▼             ▼              ▼
+         Order Svc     Payment Svc    Shipping Svc
+              └─────────────┼──────────────┘
+                            │
+                     Aggregator merges
+                            │
+                            ▼
+                    Single Response to Client
+```
+
+---
+
+## Where / When to Use It
+
+| Situation | Use Aggregator? |
+|---|---|
+| Dashboard page needing data from 5 services | ✅ Yes |
+| Mobile app with limited bandwidth / battery | ✅ Yes |
+| Order summary page (order + payment + shipping) | ✅ Yes |
+| Third-party API integration with fan-out | ✅ Yes |
+| Simple CRUD on a single service | ❌ No |
+| Service-to-service internal calls only | ❌ No |
+
+---
+
+## Types of Aggregators
+
+### 1. Scatter-Gather Aggregator (Parallel)
+Fires all calls **simultaneously**, waits for all, merges.
+
+```
+Aggregator ──┬──▶ Service A ──┐
+             ├──▶ Service B ──┤──▶ merge ──▶ response
+             └──▶ Service C ──┘
+```
+**Use when:** All calls are independent. Best for performance.
+
+---
+
+### 2. Chain Aggregator (Sequential)
+Calls services **one by one** — output of one feeds into the next.
+
+```
+Aggregator ──▶ Auth Service ──▶ Order Service ──▶ Pricing Service ──▶ response
+```
+**Use when:** Call B depends on the result of Call A.
+
+---
+
+### 3. Branch Aggregator (Conditional)
+Based on a condition, routes to **different service combinations**.
+
+```
+                    ┌──▶ Premium Services (if VIP user)
+Aggregator ────────┤
+                    └──▶ Basic Services (if regular user)
+```
+**Use when:** The set of services to call varies by business rules.
+
+---
+
+## Real-World Example — E-Commerce Order Dashboard
+
+When a user opens their **Order Detail Page**, the UI needs:
+- Order info → Order Service
+- Payment status → Payment Service
+- Delivery status → Shipping Service
+- Product details → Inventory Service
+- User profile → User Service
+
+The **Aggregator** calls all 5 (in parallel where possible), builds one `OrderDashboardResponse`, and returns it.
+
+---
+
+## Key Design Decisions Inside an Aggregator
+
+### 1. Parallel vs Sequential
+```
+// PARALLEL — use when services are independent
+CompletableFuture<Order> orderFuture = orderClient.getOrderAsync(id);
+CompletableFuture<Payment> paymentFuture = paymentClient.getPaymentAsync(id);
+CompletableFuture.allOf(orderFuture, paymentFuture).join();
+
+// SEQUENTIAL — use when B depends on A
+Order order = orderClient.getOrder(id);
+Payment payment = paymentClient.getPayment(order.getPaymentId()); // uses order result
+```
+
+---
+
+### 2. Partial Failure Handling
+What if Shipping Service is down? You have two choices:
+
+```
+Option A — Fail Fast:
+  If any service fails → return 500 to client
+
+Option B — Graceful Degradation:
+  If Shipping Service fails → return order + payment,
+  set shippingStatus = null / "UNAVAILABLE"
+  → Client still gets a useful response
+```
+**Graceful degradation is almost always preferred** in aggregators.
+
+---
+
+### 3. Timeout Strategy
+Each downstream call must have a timeout. Never let one slow service block the entire aggregator.
+
+```
+Order Service     → timeout: 2s
+Payment Service   → timeout: 2s
+Shipping Service  → timeout: 1s   ← less critical, tighter timeout
+```
+
+---
+
+### 4. Caching
+Aggregators are prime candidates for caching — they do expensive fan-out calls.
+
+```
+User profile data    → cache for 5 mins  (changes rarely)
+Payment status       → cache for 30s     (changes sometimes)
+Live inventory       → no cache           (changes frequently)
+```
+
+---
+
+## Aggregator vs API Gateway vs BFF
+
+This is a very common interview confusion point:
+
+| | API Gateway | BFF | Aggregator Service |
+|---|---|---|---|
+| **Purpose** | Routing, auth, rate limiting | Client-specific API shaping | Data fan-out + merge |
+| **Calls downstream services?** | No (just routes) | Yes | Yes |
+| **Per-client variant?** | No | Yes (mobile BFF, web BFF) | No |
+| **Business logic?** | No | Light | Yes (merge logic) |
+| **Example** | Kong, AWS API GW | Mobile-specific endpoint | Order Dashboard Service |
+
+> **BFF (Backend for Frontend)** is a *specialized aggregator* — an aggregator built specifically for one client type (mobile, web).
+
+---
+
+## Aggregator in the Big Picture
+
+```
+┌─────────────┐        ┌──────────────┐       ┌────────────────┐
+│  Mobile App │──────▶ │  API Gateway │──────▶│   Aggregator   │
+└─────────────┘        │  (auth/route)│       │   Service      │
+                       └──────────────┘       └───────┬────────┘
+                                                       │
+                              ┌──────────────┬─────────┼──────────┐
+                              ▼              ▼         ▼          ▼
+                         Order Svc    Payment Svc  Ship Svc   User Svc
+```
+
+---
+
+## Interview Questions
+
+### Conceptual
+1. **What is an Aggregator Service and why do we need it in microservices?**
+2. **What is the difference between an API Gateway and an Aggregator Service?**
+3. **What is a BFF pattern and how does it relate to an Aggregator?**
+4. **When would you choose a Chain Aggregator over a Scatter-Gather?**
+5. **How does an Aggregator Service handle partial failures from downstream services?**
+6. **What are the performance implications of an Aggregator calling 6 services sequentially?**
+7. **How would you add caching to an Aggregator? What are the risks?**
+8. **Can an Aggregator itself become a single point of failure? How do you mitigate that?**
+9. **What is graceful degradation and how does it apply to Aggregators?**
+10. **How do you propagate correlationId / tracing headers through an Aggregator to downstream services?**
+
+---
+
+### Scenario / Situational
+
+1. **"Your order dashboard is slow — takes 4 seconds to load. You're using an Aggregator that calls 4 services sequentially. What do you do?"**
+   - Expected answer: Switch to parallel calls using `CompletableFuture.allOf()`
+
+2. **"The Shipping Service goes down. Your Aggregator starts throwing 500s to all clients. How do you fix this?"**
+   - Expected answer: Graceful degradation — catch the exception, set `shippingInfo = null`, return partial response with a flag
+
+3. **"You need to build a dashboard for mobile and another for web — both need similar but different data shapes. How do you design this?"**
+   - Expected answer: BFF pattern — two separate aggregators, one per client
+
+4. **"Your Aggregator is calling User Service on every request but user data barely changes. What optimization would you apply?"**
+   - Expected answer: Cache user profile with a TTL (e.g., Redis or local Caffeine cache)
+
+5. **"Service B can only be called after you have the result from Service A. But Services C and D are independent. How do you structure the calls in your Aggregator?"**
+   - Expected answer: Call A first (sequential), then fan out B (using A's result), C, and D in parallel
+
+6. **"Your Aggregator is calling 5 services. One of them (Recommendation Service) is non-critical. How do you make sure it doesn't block the response?"**
+   - Expected answer: Set a tight timeout on it, use `CompletableFuture` with a fallback, return empty recommendations if it times out
+
+---
+
+Let me know when you're ready for the implementation — I'll build the full `OrderDashboardAggregator` with `CompletableFuture`, timeout handling, graceful degradation, and MDC correlation propagation!
     
 </script>
 

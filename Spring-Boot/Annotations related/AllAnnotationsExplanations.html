@@ -23,7 +23,662 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Java Annotations — Complete Microservice Guide
 
+---
+
+## LAYER 1 — Pure Java Annotations (No Spring / Spring Boot)
+
+These come from the **JDK itself** — `java.lang`, `javax.*`, `jakarta.*`
+
+### A. Core Java Language Annotations
+
+| Annotation | Package | Purpose |
+|---|---|---|
+| `@Override` | `java.lang` | Marks method as overriding parent |
+| `@Deprecated` | `java.lang` | Marks API as outdated |
+| `@SuppressWarnings` | `java.lang` | Suppresses compiler warnings |
+| `@FunctionalInterface` | `java.lang` | Enforces single abstract method (lambda) |
+| `@SafeVarargs` | `java.lang` | Suppresses varargs heap pollution warning |
+
+```java
+public class Animal {
+
+    @Override
+    public String toString() { return "Animal"; }   // must match parent signature
+
+    @Deprecated(since = "2.0", forRemoval = true)
+    public void oldMethod() { }
+
+    @SuppressWarnings("unchecked")
+    public void riskyMethod() {
+        List list = new ArrayList();  // raw type warning suppressed
+    }
+
+    @FunctionalInterface
+    interface Processor {
+        void process(String input);   // exactly ONE abstract method
+        // void another();            // ❌ compile error — breaks @FunctionalInterface
+    }
+}
+```
+
+---
+
+### B. Java Validation Annotations (`jakarta.validation`)
+
+Used for **bean validation** — works without Spring too.
+
+| Annotation | Purpose |
+|---|---|
+| `@NotNull` | Field cannot be null |
+| `@NotBlank` | String cannot be null or whitespace |
+| `@NotEmpty` | Collection/String cannot be empty |
+| `@Size(min,max)` | Length/size constraint |
+| `@Min(value)` | Minimum numeric value |
+| `@Max(value)` | Maximum numeric value |
+| `@Email` | Valid email format |
+| `@Pattern(regexp)` | Must match regex |
+| `@Positive` | Must be > 0 |
+| `@Future` | Date must be in future |
+| `@Past` | Date must be in past |
+
+```java
+public class OrderRequest {
+
+    @NotBlank(message = "Order ID cannot be blank")
+    private String orderId;
+
+    @NotNull
+    @Positive(message = "Amount must be positive")
+    private BigDecimal amount;
+
+    @Size(min = 1, max = 10, message = "Items must be between 1 and 10")
+    private List<String> items;
+
+    @Email(message = "Invalid email format")
+    private String customerEmail;
+
+    @Pattern(regexp = "^[A-Z]{2}\\d{6}$", message = "Invalid tracking code")
+    private String trackingCode;
+
+    @Future(message = "Delivery date must be in the future")
+    private LocalDate deliveryDate;
+}
+```
+
+---
+
+### C. Java Persistence Annotations (`jakarta.persistence`) — JPA
+
+Pure JPA — works with Hibernate directly, no Spring needed.
+
+| Annotation | Purpose |
+|---|---|
+| `@Entity` | Marks class as DB table |
+| `@Table(name)` | Maps to specific table name |
+| `@Id` | Primary key field |
+| `@GeneratedValue` | Auto-generate PK strategy |
+| `@Column` | Column mapping + constraints |
+| `@OneToMany` | One-to-many relationship |
+| `@ManyToOne` | Many-to-one relationship |
+| `@ManyToMany` | Many-to-many relationship |
+| `@OneToOne` | One-to-one relationship |
+| `@JoinColumn` | FK column in relationship |
+| `@Transient` | Field NOT persisted to DB |
+| `@Lob` | Large object (CLOB/BLOB) |
+| `@Enumerated` | Persist enum as STRING or ORDINAL |
+| `@Embedded` | Embed another class's fields |
+| `@Embeddable` | Class that can be embedded |
+| `@NamedQuery` | Pre-defined JPQL query |
+
+```java
+@Entity
+@Table(name = "orders")
+public class Order {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "order_code", nullable = false, unique = true, length = 50)
+    private String orderCode;
+
+    @Enumerated(EnumType.STRING)     // stores "PLACED" not 0
+    private OrderStatus status;
+
+    @Transient                       // not saved to DB
+    private String tempNote;
+
+    @Lob                             // maps to TEXT / CLOB
+    private String description;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;
+
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<OrderItem> items;
+
+    @Embedded
+    private Address deliveryAddress;   // Address fields merged into orders table
+}
+
+@Embeddable
+public class Address {
+    private String street;
+    private String city;
+    private String pincode;
+}
+```
+
+---
+
+### D. Java Concurrency Annotations (`java.lang`)
+
+| Annotation | Purpose |
+|---|---|
+| `@FunctionalInterface` | Single-method interface for lambdas |
+
+> Most concurrency annotations like `@GuardedBy`, `@ThreadSafe` are from `jcip-annotations` (not JDK) — used as documentation only.
+
+---
+
+## LAYER 2 — Spring Framework Annotations (No Spring Boot)
+
+These come from `org.springframework.*` — Spring core, not Boot.
+
+---
+
+### A. IoC / Dependency Injection
+
+| Annotation | Purpose |
+|---|---|
+| `@Component` | Generic Spring-managed bean |
+| `@Service` | Business logic layer bean |
+| `@Repository` | Data access layer bean |
+| `@Controller` | Web MVC controller |
+| `@RestController` | `@Controller` + `@ResponseBody` |
+| `@Autowired` | Inject dependency by type |
+| `@Qualifier("name")` | Disambiguate when multiple beans of same type |
+| `@Primary` | Default bean when multiple match |
+| `@Bean` | Method produces a Spring bean |
+| `@Configuration` | Class contains `@Bean` definitions |
+| `@Scope` | Bean scope (singleton, prototype, request) |
+| `@Lazy` | Initialize bean only when first requested |
+| `@Value` | Inject property value |
+| `@DependsOn` | Force bean init order |
+
+```java
+@Configuration
+public class AppConfig {
+
+    @Bean
+    @Primary                          // default if multiple PaymentGateway beans exist
+    public PaymentGateway razorpay() {
+        return new RazorpayGateway();
+    }
+
+    @Bean
+    @Qualifier("stripe")
+    public PaymentGateway stripe() {
+        return new StripeGateway();
+    }
+}
+
+@Service
+public class OrderService {
+
+    // Constructor injection — preferred over @Autowired on field
+    private final PaymentGateway paymentGateway;
+    private final String currency;
+
+    public OrderService(
+            @Qualifier("stripe") PaymentGateway paymentGateway,
+            @Value("${app.currency:INR}") String currency) {
+
+        this.paymentGateway = paymentGateway;
+        this.currency = currency;
+    }
+}
+
+@Repository
+public class OrderRepository { }     // also enables exception translation
+                                     // (DataAccessException wrapping)
+
+@Component
+@Scope("prototype")                  // new instance every time it's injected
+public class ReportBuilder { }
+```
+
+---
+
+### B. Spring Web MVC
+
+| Annotation | Purpose |
+|---|---|
+| `@RequestMapping` | Map URL + HTTP method to handler |
+| `@GetMapping` | Shortcut for GET |
+| `@PostMapping` | Shortcut for POST |
+| `@PutMapping` | Shortcut for PUT |
+| `@DeleteMapping` | Shortcut for DELETE |
+| `@PatchMapping` | Shortcut for PATCH |
+| `@PathVariable` | Extract value from URL path |
+| `@RequestParam` | Extract query parameter |
+| `@RequestBody` | Deserialize JSON body to object |
+| `@ResponseBody` | Serialize return value to JSON |
+| `@RequestHeader` | Extract HTTP header value |
+| `@ResponseStatus` | Set HTTP response status code |
+| `@ExceptionHandler` | Handle specific exception in controller |
+| `@ControllerAdvice` | Global exception handler across all controllers |
+| `@RestControllerAdvice` | `@ControllerAdvice` + `@ResponseBody` |
+| `@CrossOrigin` | Enable CORS for endpoint |
+| `@ModelAttribute` | Bind method param or return to model |
+| `@SessionAttribute` | Access session attributes |
+
+```java
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    @GetMapping("/{id}")
+    public OrderResponse getOrder(
+            @PathVariable String id,
+            @RequestParam(required = false, defaultValue = "false") boolean verbose,
+            @RequestHeader("X-Correlation-ID") String correlationId) {
+        return orderService.findById(id);
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)        // returns 201
+    public OrderResponse createOrder(@RequestBody @Valid OrderRequest request) {
+        return orderService.create(request);
+    }
+
+    @ExceptionHandler(OrderNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleNotFound(OrderNotFoundException ex) {
+        return new ErrorResponse(ex.getMessage());
+    }
+}
+
+// Global handler — applies to ALL controllers
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(Exception.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    public ErrorResponse handleAll(Exception ex) {
+        return new ErrorResponse("Something went wrong");
+    }
+}
+```
+
+---
+
+### C. Spring AOP (Aspect-Oriented Programming)
+
+| Annotation | Purpose |
+|---|---|
+| `@Aspect` | Marks class as an Aspect |
+| `@Before` | Run before method execution |
+| `@After` | Run after method (always) |
+| `@AfterReturning` | Run after method returns successfully |
+| `@AfterThrowing` | Run after method throws exception |
+| `@Around` | Wrap method — before + after |
+| `@Pointcut` | Reusable pointcut expression |
+
+```java
+@Aspect
+@Component
+public class LoggingAspect {
+
+    // Reusable pointcut — all methods in service package
+    @Pointcut("execution(* com.myapp.service.*.*(..))")
+    public void serviceMethods() {}
+
+    @Around("serviceMethods()")
+    public Object logExecutionTime(ProceedingJoinPoint pjp) throws Throwable {
+        long start = System.currentTimeMillis();
+        Object result = pjp.proceed();          // actual method runs here
+        long time = System.currentTimeMillis() - start;
+        log.info("Method {} took {}ms", pjp.getSignature(), time);
+        return result;
+    }
+
+    @AfterThrowing(pointcut = "serviceMethods()", throwing = "ex")
+    public void logException(JoinPoint jp, Exception ex) {
+        log.error("Exception in {}: {}", jp.getSignature(), ex.getMessage());
+    }
+}
+```
+
+---
+
+### D. Spring Transaction
+
+| Annotation | Purpose |
+|---|---|
+| `@Transactional` | Wraps method in a DB transaction |
+
+```java
+@Service
+public class PaymentService {
+
+    // Full options
+    @Transactional(
+        propagation = Propagation.REQUIRED,      // join existing or create new
+        isolation  = Isolation.READ_COMMITTED,   // read only committed data
+        timeout    = 5,                          // rollback after 5s
+        rollbackFor = Exception.class,           // rollback on any exception
+        readOnly   = false
+    )
+    public void processPayment(String orderId) {
+        // all DB ops here are in ONE transaction
+    }
+
+    @Transactional(readOnly = true)              // optimized for SELECT only
+    public Order findOrder(String id) {
+        return repo.findById(id);
+    }
+}
+```
+
+**Propagation types quick ref:**
+```
+REQUIRED      → join existing tx OR create new       ← default, use always
+REQUIRES_NEW  → always create NEW tx (suspend existing)
+SUPPORTS      → join if exists, else no tx
+NOT_SUPPORTED → suspend tx, run without
+NEVER         → throw if tx exists
+MANDATORY     → throw if NO tx exists
+NESTED        → nested tx with savepoint
+```
+
+---
+
+### E. Spring Caching
+
+| Annotation | Purpose |
+|---|---|
+| `@EnableCaching` | Activate caching in config |
+| `@Cacheable` | Cache method result |
+| `@CachePut` | Update cache without skipping method |
+| `@CacheEvict` | Remove from cache |
+
+```java
+@Service
+public class UserService {
+
+    @Cacheable(value = "users", key = "#userId")   // cache on first call
+    public UserResponse getUser(String userId) {
+        return userRepo.findById(userId);           // DB call only on cache miss
+    }
+
+    @CachePut(value = "users", key = "#user.id")   // always runs + updates cache
+    public UserResponse updateUser(User user) {
+        return userRepo.save(user);
+    }
+
+    @CacheEvict(value = "users", key = "#userId")  // removes from cache
+    public void deleteUser(String userId) {
+        userRepo.deleteById(userId);
+    }
+}
+```
+
+---
+
+### F. Spring Events & Async
+
+| Annotation | Purpose |
+|---|---|
+| `@EventListener` | Listen to application events |
+| `@Async` | Run method in separate thread |
+| `@EnableAsync` | Enable async support in config |
+| `@Scheduled` | Run method on schedule |
+| `@EnableScheduling` | Enable scheduling in config |
+
+```java
+@Component
+public class OrderEventListener {
+
+    @EventListener
+    public void handleOrderPlaced(OrderPlacedEvent event) {
+        log.info("Order placed: {}", event.getOrderId());
+    }
+
+    @Async                                    // runs in thread pool, not caller thread
+    public CompletableFuture<Void> sendEmailAsync(String email) {
+        emailService.send(email);
+        return CompletableFuture.completedFuture(null);
+    }
+
+    @Scheduled(cron = "0 0 * * * *")         // every hour
+    public void cleanupOldOrders() { }
+
+    @Scheduled(fixedDelay = 5000)            // every 5s after last run completes
+    public void poll() { }
+
+    @Scheduled(fixedRate = 10000)            // every 10s regardless of completion
+    public void heartbeat() { }
+}
+```
+
+---
+
+## LAYER 3 — Spring Boot Specific Annotations
+
+These come from `org.springframework.boot.*`
+
+---
+
+### A. Bootstrap & Configuration
+
+| Annotation | Purpose |
+|---|---|
+| `@SpringBootApplication` | `@Configuration` + `@EnableAutoConfiguration` + `@ComponentScan` |
+| `@EnableAutoConfiguration` | Triggers auto-config based on classpath |
+| `@SpringBootConfiguration` | Boot-specific `@Configuration` |
+| `@ConfigurationProperties` | Bind properties file to POJO |
+| `@EnableConfigurationProperties` | Register `@ConfigurationProperties` bean |
+| `@ConditionalOnProperty` | Load bean only if property set |
+| `@ConditionalOnClass` | Load bean only if class on classpath |
+| `@ConditionalOnMissingBean` | Load bean only if no other bean of type exists |
+| `@ConditionalOnExpression` | Load bean based on SpEL expression |
+
+```java
+@SpringBootApplication
+// = @Configuration + @EnableAutoConfiguration + @ComponentScan
+public class OrderServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderServiceApplication.class, args);
+    }
+}
+
+// Bind application.yml to a POJO
+@ConfigurationProperties(prefix = "services")
+@Component
+public class ServicesConfig {
+    private String orderUrl;    // binds services.order-url
+    private int timeout;        // binds services.timeout
+    // getters + setters
+}
+
+// Conditional bean loading
+@Configuration
+public class PaymentConfig {
+
+    @Bean
+    @ConditionalOnProperty(name = "payment.gateway", havingValue = "razorpay")
+    public PaymentGateway razorpay() { return new RazorpayGateway(); }
+
+    @Bean
+    @ConditionalOnMissingBean(PaymentGateway.class)  // fallback if none defined
+    public PaymentGateway defaultGateway() { return new MockGateway(); }
+}
+```
+
+---
+
+### B. Spring Boot Test Annotations
+
+| Annotation | Purpose |
+|---|---|
+| `@SpringBootTest` | Full application context for integration test |
+| `@WebMvcTest` | Only web layer (no service/repo) |
+| `@DataJpaTest` | Only JPA layer (in-memory DB) |
+| `@MockBean` | Add Mockito mock to Spring context |
+| `@SpyBean` | Add Mockito spy to Spring context |
+| `@AutoConfigureMockMvc` | Auto-configure MockMvc |
+| `@TestPropertySource` | Override properties in test |
+
+```java
+// Unit test — web layer only
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean                                        // service is mocked
+    private OrderService orderService;
+
+    @Test
+    void shouldReturnOrder() throws Exception {
+        given(orderService.findById("ORD-1"))
+            .willReturn(new OrderResponse("ORD-1", "PLACED"));
+
+        mockMvc.perform(get("/api/orders/ORD-1"))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.orderId").value("ORD-1"));
+    }
+}
+
+// Integration test — full context
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestPropertySource(properties = "spring.datasource.url=jdbc:h2:mem:test")
+class OrderServiceIntegrationTest {
+
+    @Autowired
+    private TestRestTemplate restTemplate;
+
+    @Test
+    void fullFlowTest() {
+        ResponseEntity<OrderResponse> res =
+            restTemplate.getForEntity("/api/orders/ORD-1", OrderResponse.class);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+}
+```
+
+---
+
+### C. Spring Data JPA (Boot)
+
+| Annotation | Purpose |
+|---|---|
+| `@Repository` | Already covered in Spring layer |
+| `@Query` | Custom JPQL or native SQL query |
+| `@Modifying` | Required with `@Query` for UPDATE/DELETE |
+| `@Param` | Bind named parameter in `@Query` |
+| `@EnableJpaRepositories` | Enable JPA repositories |
+| `@EntityScan` | Scan for JPA entities |
+
+```java
+public interface OrderRepository extends JpaRepository<Order, Long> {
+
+    // Derived query — Spring generates SQL from method name
+    List<Order> findByStatusAndUserId(String status, String userId);
+
+    // Custom JPQL
+    @Query("SELECT o FROM Order o WHERE o.amount > :minAmount AND o.status = :status")
+    List<Order> findHighValueOrders(
+        @Param("minAmount") BigDecimal amount,
+        @Param("status") String status
+    );
+
+    // Native SQL
+    @Query(value = "SELECT * FROM orders WHERE created_at > NOW() - INTERVAL 7 DAY",
+           nativeQuery = true)
+    List<Order> findRecentOrders();
+
+    // UPDATE query
+    @Modifying
+    @Transactional
+    @Query("UPDATE Order o SET o.status = :status WHERE o.orderId = :id")
+    int updateOrderStatus(@Param("id") String id, @Param("status") String status);
+}
+```
+
+---
+
+### D. Spring Security (Boot)
+
+| Annotation | Purpose |
+|---|---|
+| `@EnableWebSecurity` | Enable Spring Security config |
+| `@EnableMethodSecurity` | Enable method-level security |
+| `@PreAuthorize` | Check permission BEFORE method runs |
+| `@PostAuthorize` | Check permission AFTER method runs |
+| `@Secured` | Role-based access on method |
+| `@RolesAllowed` | JSR-250 role check |
+
+```java
+@EnableWebSecurity
+@EnableMethodSecurity
+@Configuration
+public class SecurityConfig { }
+
+@RestController
+public class AdminController {
+
+    @GetMapping("/admin/orders")
+    @PreAuthorize("hasRole('ADMIN')")            // only ADMIN role
+    public List<Order> getAllOrders() { }
+
+    @DeleteMapping("/orders/{id}")
+    @PreAuthorize("hasRole('ADMIN') or #userId == authentication.name")
+    public void deleteOrder(@PathVariable String id) { }
+
+    @GetMapping("/reports")
+    @Secured({"ROLE_ADMIN", "ROLE_MANAGER"})     // either role
+    public Report getReport() { }
+}
+```
+
+---
+
+## Full Layered Summary
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PURE JAVA (JDK)                          │
+│  @Override  @Deprecated  @FunctionalInterface               │
+│  @NotNull  @Email  @Size  @Pattern   (jakarta.validation)   │
+│  @Entity  @Id  @Column  @OneToMany   (jakarta.persistence)  │
+└─────────────────────────────────────────────────────────────┘
+                          +
+┌─────────────────────────────────────────────────────────────┐
+│                  SPRING FRAMEWORK                           │
+│  @Component  @Service  @Repository  @Autowired              │
+│  @GetMapping  @PostMapping  @RequestBody  @PathVariable     │
+│  @Transactional  @Aspect  @Around  @Cacheable               │
+│  @Async  @Scheduled  @EventListener                         │
+│  @ControllerAdvice  @ExceptionHandler                       │
+└─────────────────────────────────────────────────────────────┘
+                          +
+┌─────────────────────────────────────────────────────────────┐
+│                   SPRING BOOT                               │
+│  @SpringBootApplication  @ConfigurationProperties           │
+│  @ConditionalOnProperty  @ConditionalOnClass                │
+│  @SpringBootTest  @WebMvcTest  @DataJpaTest  @MockBean      │
+│  @Query  @Modifying  @Param                                 │
+│  @PreAuthorize  @EnableWebSecurity                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Want me to go deeper on any section — like all `@Conditional*` variants, Lombok annotations, or Kafka-specific annotations (`@KafkaListener`, `@KafkaHandler`)?
     
 </script>
 

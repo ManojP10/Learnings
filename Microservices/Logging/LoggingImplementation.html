@@ -23,7 +23,392 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+I'll give you a comprehensive breakdown of logging in microservices — libraries, patterns, and implementations.
 
+---
+
+## Logging in Microservices — Complete Guide
+
+---
+
+### 1. The Core Logging Stack
+
+In a typical Spring Boot microservice, logging is built on **three layers**:
+
+```
+Your Code  →  SLF4J (API)  →  Logback (Implementation)  →  Output (Console / File / ELK)
+```
+
+| Layer | Library | Role |
+|---|---|---|
+| **API** | SLF4J | Abstraction — your code talks only to this |
+| **Implementation** | Logback | Does the actual writing |
+| **Structured Output** | Logstash Encoder | Formats logs as JSON for ELK/Splunk |
+| **Context** | MDC (Mapped Diagnostic Context) | Attaches metadata (correlationId, userId) to every log line |
+
+---
+
+### 2. Maven Dependencies
+
+```xml
+<!-- Spring Boot already pulls SLF4J + Logback by default -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+
+<!-- For JSON structured logging (ELK/Splunk) -->
+<dependency>
+    <groupId>net.logstash.logback</groupId>
+    <artifactId>logstash-logback-encoder</artifactId>
+    <version>7.4</version>
+</dependency>
+```
+
+> **Note:** You do NOT need to add SLF4J or Logback manually — `spring-boot-starter` brings them transitively.
+
+---
+
+### 3. SLF4J — The Logging API
+
+SLF4J is just an **interface**. Your code never directly uses Logback.
+
+```java
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+@RestController
+public class OrderController {
+
+    // Best practice: static final, named after the class
+    private static final Logger log = LoggerFactory.getLogger(OrderController.class);
+
+    @GetMapping("/orders/{id}")
+    public Order getOrder(@PathVariable String id) {
+        log.info("Fetching order with id={}", id);          // parameterized — no string concat
+        log.debug("Debug detail for order lookup: {}", id);
+        log.warn("Order {} is in PENDING state too long", id);
+        log.error("Order not found for id={}", id);
+        return orderService.findById(id);
+    }
+}
+```
+
+**Why parameterized logging (`{}`) matters:**
+```java
+// BAD — string is built even if DEBUG is disabled
+log.debug("Order: " + order.toString());
+
+// GOOD — string built only if DEBUG is enabled
+log.debug("Order: {}", order);
+```
+
+---
+
+### 4. Logback Configuration
+
+#### 4a. `logback-spring.xml` — Local Profile (Human-readable)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Console appender for local dev -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>
+                %d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} 
+                [correlationId=%X{correlationId}] - %msg%n
+            </pattern>
+        </encoder>
+    </appender>
+
+    <!-- Rolling file appender -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/app.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/app-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory> <!-- keep 30 days -->
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <springProfile name="local">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="com.myapp" level="DEBUG"/> <!-- your package: verbose -->
+    </springProfile>
+
+</configuration>
+```
+
+#### 4b. Production Profile — JSON / Structured Logging
+
+```xml
+<springProfile name="prod">
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- These fields appear in every log line automatically -->
+            <customFields>{"service":"order-service","env":"prod"}</customFields>
+        </encoder>
+    </appender>
+
+    <root level="WARN">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </root>
+
+    <logger name="com.myapp" level="INFO"/>
+</springProfile>
+```
+
+**Sample JSON output in prod:**
+```json
+{
+  "@timestamp": "2025-04-12T10:30:00.123Z",
+  "level": "INFO",
+  "logger_name": "com.myapp.OrderController",
+  "message": "Fetching order with id=ORD-42",
+  "correlationId": "abc-123-xyz",
+  "service": "order-service",
+  "env": "prod",
+  "thread_name": "http-nio-8080-exec-3"
+}
+```
+
+---
+
+### 5. MDC — Mapped Diagnostic Context
+
+MDC is a **thread-local map** that automatically attaches key-value pairs to every log line — without passing them explicitly to every method.
+
+#### 5a. MDC Correlation Filter
+
+```java
+import org.slf4j.MDC;
+import javax.servlet.*;
+import javax.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.util.UUID;
+
+@Component
+@Order(1) // run first, before all other filters
+public class MDCCorrelationFilter implements Filter {
+
+    private static final String CORRELATION_ID_HEADER = "X-Correlation-ID";
+    private static final String CORRELATION_ID_MDC_KEY = "correlationId";
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+
+        HttpServletRequest httpReq = (HttpServletRequest) request;
+
+        // Accept from upstream gateway or generate new
+        String correlationId = httpReq.getHeader(CORRELATION_ID_HEADER);
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = UUID.randomUUID().toString();
+        }
+
+        try {
+            MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
+            MDC.put("userId", extractUserId(httpReq)); // optional
+
+            chain.doFilter(request, response); // actual request handling
+
+        } finally {
+            MDC.clear(); // CRITICAL — prevents ThreadLocal leak in thread pools
+        }
+    }
+
+    private String extractUserId(HttpServletRequest req) {
+        // Extract from JWT / header — simplified
+        String userId = req.getHeader("X-User-ID");
+        return userId != null ? userId : "anonymous";
+    }
+}
+```
+
+**What MDC does for you:**
+
+```
+// You write this in your service:
+log.info("Processing order {}", orderId);
+
+// But the log output is:
+[correlationId=abc-123] [userId=user-99] INFO  Processing order ORD-42
+```
+
+No parameter passing needed — MDC handles it automatically for the entire request thread.
+
+---
+
+### 6. Propagating MDC Across Async Threads
+
+MDC is thread-local, so it **does NOT propagate automatically** to `@Async` threads or `CompletableFuture`.
+
+```java
+@Service
+public class AsyncOrderService {
+
+    @Async
+    public CompletableFuture<Void> processAsync(String orderId) {
+        // MDC is EMPTY here — new thread, clean slate
+        log.info("Processing async for order {}", orderId); // correlationId is MISSING
+        return CompletableFuture.completedFuture(null);
+    }
+}
+```
+
+**Fix — manual MDC copy:**
+
+```java
+@Component
+public class MDCTaskDecorator implements TaskDecorator {
+
+    @Override
+    public Runnable decorate(Runnable runnable) {
+        // Capture MDC from the PARENT thread BEFORE handing off
+        Map<String, String> contextMap = MDC.getCopyOfContextMap();
+
+        return () -> {
+            try {
+                if (contextMap != null) {
+                    MDC.setContextMap(contextMap); // restore in child thread
+                }
+                runnable.run();
+            } finally {
+                MDC.clear(); // clean up child thread too
+            }
+        };
+    }
+}
+
+// Register the decorator on your thread pool:
+@Configuration
+public class AsyncConfig implements AsyncConfigurer {
+
+    @Override
+    public Executor getAsyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setTaskDecorator(new MDCTaskDecorator()); // <-- plug it in
+        executor.setCorePoolSize(5);
+        executor.setMaxPoolSize(10);
+        executor.initialize();
+        return executor;
+    }
+}
+```
+
+---
+
+### 7. Propagating Correlation ID Across Services (Feign / RestTemplate)
+
+When Service A calls Service B, you must **forward the correlationId in the HTTP header**.
+
+#### Feign Interceptor:
+
+```java
+@Component
+public class FeignCorrelationInterceptor implements RequestInterceptor {
+
+    @Override
+    public void apply(RequestTemplate template) {
+        String correlationId = MDC.get("correlationId");
+        if (correlationId != null) {
+            template.header("X-Correlation-ID", correlationId);
+        }
+    }
+}
+```
+
+#### RestTemplate Interceptor:
+
+```java
+@Bean
+public RestTemplate restTemplate() {
+    RestTemplate rt = new RestTemplate();
+    rt.getInterceptors().add((request, body, execution) -> {
+        String correlationId = MDC.get("correlationId");
+        if (correlationId != null) {
+            request.getHeaders().add("X-Correlation-ID", correlationId);
+        }
+        return execution.execute(request, body);
+    });
+    return rt;
+}
+```
+
+---
+
+### 8. Log Levels — When to Use What
+
+| Level | Use for |
+|---|---|
+| `ERROR` | Unrecoverable failures, exceptions that break a flow |
+| `WARN` | Recoverable issues, unexpected but handled states |
+| `INFO` | Business events — order placed, user logged in |
+| `DEBUG` | Developer diagnostics — query params, intermediate state |
+| `TRACE` | Very fine-grained — loop iterations, byte-level data |
+
+```java
+log.error("Payment failed for orderId={}, reason={}", orderId, e.getMessage(), e); // include exception
+log.warn("Retry attempt {} for orderId={}", retryCount, orderId);
+log.info("Order {} placed successfully by userId={}", orderId, userId);
+log.debug("Order lookup query params: {}", params);
+```
+
+---
+
+### 9. The Full Architecture Picture
+
+```
+ Request In
+     │
+     ▼
+┌─────────────────────────────────┐
+│     MDCCorrelationFilter        │  ← puts correlationId into MDC
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│     Controller / Service        │  ← log.info() — MDC auto-attached
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│     SLF4J API                   │  ← your code only sees this
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│     Logback Engine              │  ← reads logback-spring.xml
+└─────────────┬───────────────────┘
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+  Console         JSON File
+  (local)         (prod → ELK/Splunk)
+```
+
+---
+
+### Quick Reference Cheat Sheet
+
+| What | How |
+|---|---|
+| Declare logger | `private static final Logger log = LoggerFactory.getLogger(X.class);` |
+| Parameterized log | `log.info("id={}", id)` |
+| Set MDC | `MDC.put("correlationId", id)` |
+| Clear MDC | `MDC.clear()` in `finally` |
+| Async MDC | `MDCTaskDecorator` on `ThreadPoolTaskExecutor` |
+| Forward corr. ID | `FeignCorrelationInterceptor` or `RestTemplate` interceptor |
+| Local config | `logback-spring.xml` with `<springProfile name="local">` |
+| Prod JSON config | `LogstashEncoder` in `<springProfile name="prod">` |
+
+This is the production-grade logging setup used in real enterprise microservices. Let me know if you want to go deeper on any section — ELK stack integration, Sleuth/Zipkin distributed tracing, or log aggregation patterns.
     
 </script>
 

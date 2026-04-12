@@ -23,7 +23,606 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Custom Annotations in Spring Boot
 
+---
+
+## How Annotation Works Internally — First
+
+Before creating one, understand the flow:
+
+```
+You write @YourAnnotation on a method/class
+           │
+           ▼
+Spring AOP intercepts it        ← via @Aspect
+           │
+           ▼
+Your custom logic runs          ← before / after / around the method
+           │
+           ▼
+Method executes normally
+```
+
+---
+
+## What You Need to Create a Custom Annotation
+
+```
+Custom Annotation = 3 parts
+
+1. @interface file        ← defines the annotation
+2. @Aspect class          ← defines what happens when annotation is used
+3. Usage                  ← put annotation on method/class
+```
+
+---
+
+## The Scenario
+
+We'll build **3 real-world custom annotations** you'd actually use in a microservice:
+
+```
+@LogExecutionTime     ← logs how long a method took
+@ValidateRequest      ← validates input before method runs
+@Retry                ← retries method on failure N times
+```
+
+---
+
+## Dependencies `pom.xml`
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+
+<!-- AOP — needed for @Aspect to work -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-aop</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.projectlombok</groupId>
+    <artifactId>lombok</artifactId>
+</dependency>
+```
+
+---
+
+## Project Structure
+
+```
+src/
+├── annotation/
+│   ├── LogExecutionTime.java       ← annotation definition
+│   ├── ValidateRequest.java
+│   └── Retry.java
+├── aspect/
+│   ├── LogExecutionTimeAspect.java ← annotation logic
+│   ├── ValidateRequestAspect.java
+│   └── RetryAspect.java
+├── controller/
+│   └── OrderController.java        ← where annotations are used
+├── service/
+│   └── OrderService.java
+└── dto/
+    └── OrderRequest.java
+```
+
+---
+
+## Part 1 — `@LogExecutionTime`
+
+### Step 1 — Define the Annotation
+
+```java
+// annotation/LogExecutionTime.java
+package com.example.annotation;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target(ElementType.METHOD)          // can only be used on methods
+@Retention(RetentionPolicy.RUNTIME)  // available at runtime via reflection
+public @interface LogExecutionTime {
+
+    String value() default "";       // optional label
+}
+```
+
+**Meta-annotations explained:**
+
+```
+@Target      → WHERE can this annotation be applied?
+               ElementType.METHOD       → on methods
+               ElementType.TYPE         → on classes/interfaces
+               ElementType.FIELD        → on fields
+               ElementType.PARAMETER    → on parameters
+               ElementType.CONSTRUCTOR  → on constructors
+
+@Retention   → HOW LONG does annotation info survive?
+               RetentionPolicy.SOURCE   → only in source, gone after compile
+               RetentionPolicy.CLASS    → in .class file, not at runtime
+               RetentionPolicy.RUNTIME  → available at runtime ← always use this for Spring AOP
+```
+
+### Step 2 — Define the Aspect (the logic)
+
+```java
+// aspect/LogExecutionTimeAspect.java
+package com.example.aspect;
+
+import com.example.annotation.LogExecutionTime;
+import lombok.extern.slf4j.Slf4j;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.stereotype.Component;
+
+@Aspect       // marks this as an AOP Aspect
+@Component    // makes it a Spring bean
+@Slf4j
+public class LogExecutionTimeAspect {
+
+    // @Around intercepts methods annotated with @LogExecutionTime
+    @Around("@annotation(logExecutionTime)")
+    public Object logTime(ProceedingJoinPoint joinPoint,
+                          LogExecutionTime logExecutionTime) throws Throwable {
+
+        // Get method name
+        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
+        String methodName = signature.getDeclaringTypeName() + "." + signature.getName();
+
+        // Get optional label from annotation
+        String label = logExecutionTime.value().isEmpty()
+                ? methodName
+                : logExecutionTime.value();
+
+        long start = System.currentTimeMillis();
+
+        log.info(">> Starting: [{}]", label);
+
+        try {
+            Object result = joinPoint.proceed(); // actual method runs here
+            long timeTaken = System.currentTimeMillis() - start;
+            log.info("<< Completed: [{}] in {}ms", label, timeTaken);
+            return result;
+
+        } catch (Throwable ex) {
+            long timeTaken = System.currentTimeMillis() - start;
+            log.error("<< Failed: [{}] in {}ms — reason: {}", label, timeTaken, ex.getMessage());
+            throw ex;
+        }
+    }
+}
+```
+
+### Step 3 — Use it
+
+```java
+@Service
+public class OrderService {
+
+    // No label — uses method name automatically
+    @LogExecutionTime
+    public Order findOrder(String orderId) {
+        // simulate DB call
+        Thread.sleep(200);
+        return new Order(orderId, "PLACED");
+    }
+
+    // With custom label
+    @LogExecutionTime("Fetch All Orders DB Query")
+    public List<Order> getAllOrders() {
+        Thread.sleep(500);
+        return List.of();
+    }
+}
+```
+
+**Output:**
+```
+>> Starting: [Fetch All Orders DB Query]
+<< Completed: [Fetch All Orders DB Query] in 503ms
+```
+
+---
+
+## Part 2 — `@ValidateRequest`
+
+Validates method arguments before the method runs.
+
+### Step 1 — Define the Annotation
+
+```java
+// annotation/ValidateRequest.java
+package com.example.annotation;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface ValidateRequest {
+
+    boolean checkNull() default true;       // check if args are null
+    int maxAmount() default Integer.MAX_VALUE; // custom business rule
+}
+```
+
+### Step 2 — Define the Aspect
+
+```java
+// aspect/ValidateRequestAspect.java
+package com.example.aspect;
+
+import com.example.annotation.ValidateRequest;
+import com.example.dto.OrderRequest;
+import com.example.exception.ValidationException;
+import lombok.extern.slf4j.Slf4j;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.springframework.stereotype.Component;
+
+@Aspect
+@Component
+@Slf4j
+public class ValidateRequestAspect {
+
+    @Around("@annotation(validateRequest)")
+    public Object validate(ProceedingJoinPoint joinPoint,
+                           ValidateRequest validateRequest) throws Throwable {
+
+        Object[] args = joinPoint.getArgs(); // get all method arguments
+
+        for (Object arg : args) {
+
+            // Rule 1 — null check
+            if (validateRequest.checkNull() && arg == null) {
+                log.warn("Validation failed — null argument detected");
+                throw new ValidationException("Request cannot be null");
+            }
+
+            // Rule 2 — amount check for OrderRequest specifically
+            if (arg instanceof OrderRequest request) {
+
+                if (request.getAmount() <= 0) {
+                    throw new ValidationException("Amount must be positive");
+                }
+
+                if (request.getAmount() > validateRequest.maxAmount()) {
+                    throw new ValidationException(
+                        "Amount exceeds max allowed: " + validateRequest.maxAmount()
+                    );
+                }
+
+                if (request.getOrderId() == null || request.getOrderId().isBlank()) {
+                    throw new ValidationException("Order ID cannot be blank");
+                }
+
+                log.info("Validation passed for orderId={}", request.getOrderId());
+            }
+        }
+
+        return joinPoint.proceed(); // all good — proceed to actual method
+    }
+}
+```
+
+### Step 3 — Use it
+
+```java
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    private final OrderService orderService;
+
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    @PostMapping
+    @ValidateRequest(checkNull = true, maxAmount = 100000)  // custom rules
+    public ResponseEntity<Order> createOrder(@RequestBody OrderRequest request) {
+        // this runs ONLY if validation passes
+        Order order = orderService.createOrder(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(order);
+    }
+
+    @PostMapping("/premium")
+    @ValidateRequest(maxAmount = 1000000)    // higher limit for premium
+    public ResponseEntity<Order> createPremiumOrder(@RequestBody OrderRequest request) {
+        Order order = orderService.createOrder(request);
+        return ResponseEntity.ok(order);
+    }
+}
+```
+
+---
+
+## Part 3 — `@Retry`
+
+Retries a method automatically on failure.
+
+### Step 1 — Define the Annotation
+
+```java
+// annotation/Retry.java
+package com.example.annotation;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Retry {
+
+    int attempts() default 3;                          // how many times to retry
+    long delayMs() default 1000;                       // wait between retries
+    Class<? extends Throwable>[] retryOn()
+            default {Exception.class};                 // which exceptions trigger retry
+}
+```
+
+### Step 2 — Define the Aspect
+
+```java
+// aspect/RetryAspect.java
+package com.example.aspect;
+
+import com.example.annotation.Retry;
+import lombok.extern.slf4j.Slf4j;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.springframework.stereotype.Component;
+
+@Aspect
+@Component
+@Slf4j
+public class RetryAspect {
+
+    @Around("@annotation(retry)")
+    public Object retryOnFailure(ProceedingJoinPoint joinPoint,
+                                 Retry retry) throws Throwable {
+
+        int maxAttempts = retry.attempts();
+        long delayMs    = retry.delayMs();
+        Class<? extends Throwable>[] retryOn = retry.retryOn();
+
+        String methodName = joinPoint.getSignature().getName();
+        Throwable lastException = null;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                log.info("Attempt {}/{} for method [{}]", attempt, maxAttempts, methodName);
+
+                Object result = joinPoint.proceed(); // try running the method
+
+                if (attempt > 1) {
+                    log.info("Method [{}] succeeded on attempt {}", methodName, attempt);
+                }
+                return result; // success — return immediately
+
+            } catch (Throwable ex) {
+
+                lastException = ex;
+
+                // Check if this exception type should trigger retry
+                boolean shouldRetry = false;
+                for (Class<? extends Throwable> retryableEx : retryOn) {
+                    if (retryableEx.isAssignableFrom(ex.getClass())) {
+                        shouldRetry = true;
+                        break;
+                    }
+                }
+
+                if (!shouldRetry) {
+                    log.error("Non-retryable exception in [{}]: {}", methodName, ex.getMessage());
+                    throw ex; // don't retry — rethrow immediately
+                }
+
+                log.warn("Attempt {}/{} failed for [{}]: {}",
+                        attempt, maxAttempts, methodName, ex.getMessage());
+
+                if (attempt < maxAttempts) {
+                    log.info("Retrying in {}ms...", delayMs);
+                    Thread.sleep(delayMs); // wait before next retry
+                }
+            }
+        }
+
+        // All attempts exhausted
+        log.error("All {} attempts failed for method [{}]", maxAttempts, methodName);
+        throw lastException;
+    }
+}
+```
+
+### Step 3 — Use it
+
+```java
+@Service
+@Slf4j
+public class PaymentService {
+
+    private int callCount = 0;
+
+    // Retry 3 times, wait 500ms between, only on RuntimeException
+    @Retry(attempts = 3, delayMs = 500, retryOn = {RuntimeException.class})
+    @LogExecutionTime("Payment Processing")   // stack multiple annotations!
+    public String processPayment(String orderId) {
+
+        callCount++;
+        log.info("Processing payment for orderId={}, attempt={}", orderId, callCount);
+
+        // Simulate failure on first 2 calls
+        if (callCount < 3) {
+            throw new RuntimeException("Payment gateway timeout");
+        }
+
+        callCount = 0; // reset
+        return "PAYMENT_SUCCESS_" + orderId;
+    }
+
+    // Only retry on specific exception, 5 times
+    @Retry(attempts = 5, delayMs = 200, retryOn = {RuntimeException.class})
+    public void callExternalApi() {
+        // external API call that may fail
+    }
+}
+```
+
+**Output:**
+```
+>> Starting: [Payment Processing]
+Attempt 1/3 for method [processPayment]
+Attempt 1/3 failed for [processPayment]: Payment gateway timeout
+Retrying in 500ms...
+Attempt 2/3 for method [processPayment]
+Attempt 2/3 failed for [processPayment]: Payment gateway timeout
+Retrying in 500ms...
+Attempt 3/3 for method [processPayment]
+Method [processPayment] succeeded on attempt 3
+<< Completed: [Payment Processing] in 1023ms
+```
+
+---
+
+## Exception Handler for Validation
+
+```java
+// exception/ValidationException.java
+public class ValidationException extends RuntimeException {
+    public ValidationException(String message) {
+        super(message);
+    }
+}
+
+// exception/GlobalExceptionHandler.java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ValidationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleValidation(ValidationException ex) {
+        return Map.of(
+            "error", "Validation Failed",
+            "message", ex.getMessage()
+        );
+    }
+}
+```
+
+---
+
+## DTO
+
+```java
+// dto/OrderRequest.java
+@Data
+@Builder
+public class OrderRequest {
+    private String orderId;
+    private double amount;
+    private String customerId;
+}
+```
+
+---
+
+## How All 3 Annotations Work Together
+
+```
+POST /api/orders
+      │
+      ▼
+@ValidateRequest aspect runs FIRST    ← checks null, amount, orderId
+      │
+      │  (if validation fails → throws ValidationException → 400)
+      │  (if validation passes ↓)
+      ▼
+OrderController.createOrder() called
+      │
+      ▼
+OrderService.createOrder() called
+      │
+      ▼
+PaymentService.processPayment() called
+      │
+  @LogExecutionTime starts timer
+  @Retry wraps with retry loop
+      │
+      ├── attempt 1 → fails
+      ├── attempt 2 → fails
+      └── attempt 3 → SUCCESS
+      │
+  @LogExecutionTime logs total time
+      │
+      ▼
+Response returned to client
+```
+
+---
+
+## The Anatomy of Any Custom Annotation
+
+```
+@Target(ElementType.METHOD)          ← where it can be placed
+@Retention(RetentionPolicy.RUNTIME)  ← survives until runtime
+public @interface YourAnnotation {
+
+    String value() default "default"; ← annotation attributes
+    int count() default 1;
+    Class<?>[] types() default {};
+}
+
+          +
+
+@Aspect
+@Component
+public class YourAspect {
+
+    @Before("@annotation(yourAnnotation)")    ← Before method
+    @After("@annotation(yourAnnotation)")     ← After method (always)
+    @Around("@annotation(yourAnnotation)")    ← Full control (most common)
+
+    public Object handle(ProceedingJoinPoint pjp,
+                         YourAnnotation yourAnnotation) throws Throwable {
+
+        // before logic
+        Object result = pjp.proceed();   // actual method
+        // after logic
+        return result;
+    }
+}
+```
+
+---
+
+## Quick Reference
+
+```
+Step 1 → Create @interface with @Target + @Retention
+Step 2 → Create @Aspect @Component class
+Step 3 → Write @Around/@Before/@After method
+Step 4 → Use joinPoint.proceed() to run actual method
+Step 5 → Apply annotation on method/class
+```
+
+The pattern is always the same — only the logic inside the Aspect changes. Want me to add `@RateLimit` (limit API calls per second) or `@Cacheable` custom version as the next example?
     
 </script>
 
