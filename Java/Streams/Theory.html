@@ -23,7 +23,885 @@
 <div id="content"></div>
 <script id="markdown" type="text/plain">
 
+# Java Streams — Complete Function Reference Guide
 
+---
+
+## What is a Stream Pipeline?
+
+```
+Source → Intermediate Operations → Terminal Operation
+           (lazy, chainable)         (triggers execution)
+
+List.of(1,2,3,4,5)
+    .stream()               ← source
+    .filter(n -> n > 2)     ← intermediate (lazy)
+    .map(n -> n * 10)       ← intermediate (lazy)
+    .collect(toList())      ← terminal (executes everything)
+```
+
+> **Nothing executes until terminal operation is called.** Intermediate ops just build the pipeline.
+
+---
+
+## The Big Picture — All Stream Methods
+
+```
+Stream Methods
+│
+├── CREATING STREAMS
+│   stream(), parallelStream(), Stream.of(), Stream.iterate(), Stream.generate()
+│
+├── INTERMEDIATE (returns Stream — chainable, lazy)
+│   ├── Filtering    → filter(), distinct(), limit(), skip(), takeWhile(), dropWhile()
+│   ├── Transforming → map(), flatMap(), mapToInt(), mapToLong(), mapToDouble()
+│   ├── Peeking      → peek()
+│   └── Sorting      → sorted()
+│
+└── TERMINAL (returns result — triggers execution)
+    ├── Collecting   → collect()
+    ├── Matching     → anyMatch(), allMatch(), noneMatch()
+    ├── Finding      → findFirst(), findAny()
+    ├── Aggregating  → count(), sum(), min(), max(), average()
+    ├── Reducing     → reduce()
+    ├── Consuming    → forEach(), forEachOrdered()
+    └── Checking     → toArray()
+```
+
+---
+
+## Setup — Sample Data Used Throughout
+
+```java
+// We'll use these throughout all examples
+List<String> names = List.of("Manoj", "Kumar", "Rahul", "Manoj", "Priya", "Raj");
+
+record Employee(String name, String dept, double salary, int age) {}
+
+List<Employee> employees = List.of(
+    new Employee("Manoj",  "Engineering", 85000, 28),
+    new Employee("Kumar",  "Engineering", 92000, 32),
+    new Employee("Rahul",  "HR",          55000, 25),
+    new Employee("Priya",  "HR",          62000, 30),
+    new Employee("Raj",    "Finance",     78000, 35),
+    new Employee("Sneha",  "Finance",     88000, 29),
+    new Employee("Vikram", "Engineering", 95000, 38)
+);
+```
+
+---
+
+## PART 1 — Creating Streams
+
+| Method | Returns | Use when |
+|---|---|---|
+| `collection.stream()` | `Stream<T>` | From any collection |
+| `collection.parallelStream()` | `Stream<T>` | Multi-threaded processing |
+| `Stream.of(a, b, c)` | `Stream<T>` | From fixed values |
+| `Stream.iterate(seed, fn)` | `Stream<T>` | Infinite sequential stream |
+| `Stream.generate(supplier)` | `Stream<T>` | Infinite generated stream |
+| `IntStream.range(0, 10)` | `IntStream` | Integer range |
+| `IntStream.rangeClosed(1, 10)` | `IntStream` | Inclusive integer range |
+| `Arrays.stream(arr)` | `Stream<T>` | From array |
+
+```java
+// From collection
+employees.stream()
+
+// From fixed values
+Stream.of("a", "b", "c")
+
+// Infinite — first 10 even numbers
+Stream.iterate(0, n -> n + 2)
+      .limit(10)
+      .collect(toList());
+// [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+
+// Infinite — 5 random numbers
+Stream.generate(Math::random)
+      .limit(5)
+      .collect(toList());
+
+// Integer range — like a for loop
+IntStream.range(1, 6)           // 1,2,3,4,5  (excludes 6)
+         .forEach(System.out::println);
+
+IntStream.rangeClosed(1, 5)     // 1,2,3,4,5  (includes 5)
+         .sum();                // → 15
+```
+
+---
+
+## PART 2 — Intermediate Operations
+
+---
+
+### `filter(Predicate)` — Keep matching elements
+
+```
+Input  : [1, 2, 3, 4, 5]
+filter : n > 2
+Output : [3, 4, 5]
+```
+
+| | Detail |
+|---|---|
+| **Returns** | `Stream<T>` |
+| **Argument** | `Predicate<T>` → `T → boolean` |
+| **Lazy?** | ✅ Yes |
+
+```java
+// Basic filter
+employees.stream()
+    .filter(e -> e.dept().equals("Engineering"))
+    .collect(toList());
+// [Manoj, Kumar, Vikram]
+
+// Chain multiple filters
+employees.stream()
+    .filter(e -> e.dept().equals("Engineering"))
+    .filter(e -> e.salary() > 90000)
+    .collect(toList());
+// [Kumar, Vikram]
+
+// Filter + negate
+employees.stream()
+    .filter(e -> !e.dept().equals("HR"))
+    .collect(toList());
+// everyone except HR
+```
+
+---
+
+### `map(Function)` — Transform each element (1 to 1)
+
+```
+Input  : ["manoj", "kumar"]
+map    : String::toUpperCase
+Output : ["MANOJ", "KUMAR"]
+```
+
+| | Detail |
+|---|---|
+| **Returns** | `Stream<R>` (different type possible) |
+| **Argument** | `Function<T, R>` → `T → R` |
+| **Lazy?** | ✅ Yes |
+
+```java
+// Extract field
+employees.stream()
+    .map(Employee::name)
+    .collect(toList());
+// ["Manoj", "Kumar", "Rahul", "Priya", "Raj", "Sneha", "Vikram"]
+
+// Transform type
+employees.stream()
+    .map(e -> e.salary() * 1.10)    // apply 10% hike
+    .collect(toList());
+// [93500.0, 101200.0, ...]
+
+// Map to different object
+employees.stream()
+    .map(e -> Map.of("name", e.name(), "dept", e.dept()))
+    .collect(toList());
+```
+
+---
+
+### `flatMap(Function)` — Transform + Flatten (1 to many)
+
+```
+Input  : [["a","b"], ["c","d"]]
+flatMap: list → list.stream()
+Output : ["a", "b", "c", "d"]    ← flattened
+```
+
+| | Detail |
+|---|---|
+| **Returns** | `Stream<R>` (flattened) |
+| **Argument** | `Function<T, Stream<R>>` → `T → Stream<R>` |
+| **Lazy?** | ✅ Yes |
+| **Key rule** | When mapping function returns a List/Stream — use flatMap |
+
+```java
+// Classic — flatten list of lists
+List<List<String>> nested = List.of(
+    List.of("Manoj", "Kumar"),
+    List.of("Rahul", "Priya")
+);
+
+nested.stream()
+    .flatMap(List::stream)          // each inner list → stream
+    .collect(toList());
+// ["Manoj", "Kumar", "Rahul", "Priya"]
+
+// Split sentences into words
+List<String> sentences = List.of("Hello World", "Java Streams");
+
+sentences.stream()
+    .flatMap(s -> Arrays.stream(s.split(" ")))
+    .collect(toList());
+// ["Hello", "World", "Java", "Streams"]
+
+// Employee skills (each employee has multiple skills)
+record Employee(String name, List<String> skills) {}
+employees.stream()
+    .flatMap(e -> e.skills().stream())
+    .distinct()
+    .collect(toList());
+// all unique skills across all employees
+```
+
+---
+
+### `distinct()` — Remove duplicates
+
+| | Detail |
+|---|---|
+| **Returns** | `Stream<T>` |
+| **Argument** | None |
+| **Uses** | `.equals()` for comparison |
+
+```java
+names.stream()
+    .distinct()
+    .collect(toList());
+// ["Manoj", "Kumar", "Rahul", "Priya", "Raj"]  ← second Manoj removed
+
+// Distinct on field — use map first, then distinct
+employees.stream()
+    .map(Employee::dept)
+    .distinct()
+    .collect(toList());
+// ["Engineering", "HR", "Finance"]
+```
+
+---
+
+### `sorted()` / `sorted(Comparator)` — Sort elements
+
+| | Detail |
+|---|---|
+| **Returns** | `Stream<T>` |
+| **Argument** | None (natural order) or `Comparator<T>` |
+
+```java
+// Natural order (alphabetical for String)
+names.stream()
+    .sorted()
+    .collect(toList());
+// ["Kumar", "Manoj", "Manoj", "Priya", "Raj", "Rahul"]
+
+// Custom comparator — by salary ascending
+employees.stream()
+    .sorted(Comparator.comparingDouble(Employee::salary))
+    .collect(toList());
+
+// Descending
+employees.stream()
+    .sorted(Comparator.comparingDouble(Employee::salary).reversed())
+    .collect(toList());
+
+// Multi-level sort — dept asc, then salary desc
+employees.stream()
+    .sorted(Comparator.comparing(Employee::dept)
+                      .thenComparingDouble(Employee::salary).reversed())
+    .collect(toList());
+```
+
+---
+
+### `limit(n)` and `skip(n)` — Pagination
+
+| | Detail |
+|---|---|
+| `limit(n)` returns | First n elements |
+| `skip(n)` returns | All elements after skipping first n |
+| **Use together for** | Pagination |
+
+```java
+// Top 3 highest paid
+employees.stream()
+    .sorted(Comparator.comparingDouble(Employee::salary).reversed())
+    .limit(3)
+    .collect(toList());
+// [Vikram(95000), Kumar(92000), Sneha(88000)]
+
+// Skip first 2, take next 3 — pagination
+employees.stream()
+    .skip(2)
+    .limit(3)
+    .collect(toList());
+
+// Page formula:
+int page = 2, pageSize = 3;
+employees.stream()
+    .skip((long)(page - 1) * pageSize)
+    .limit(pageSize)
+    .collect(toList());
+```
+
+---
+
+### `takeWhile(Predicate)` / `dropWhile(Predicate)` — Java 9+
+
+| | Detail |
+|---|---|
+| `takeWhile` | Take elements WHILE condition is true, stop at first false |
+| `dropWhile` | Drop elements WHILE condition is true, take rest |
+| **Key difference from filter** | Stops at first mismatch — filter checks all elements |
+
+```java
+List<Integer> numbers = List.of(2, 4, 6, 7, 8, 10);
+
+// takeWhile — stops at 7 (first odd)
+numbers.stream()
+    .takeWhile(n -> n % 2 == 0)
+    .collect(toList());
+// [2, 4, 6]   ← stopped at 7, didn't check 8, 10
+
+// dropWhile — drops until first odd
+numbers.stream()
+    .dropWhile(n -> n % 2 == 0)
+    .collect(toList());
+// [7, 8, 10]  ← dropped 2,4,6 then kept rest
+```
+
+---
+
+### `peek(Consumer)` — Debug without breaking chain
+
+| | Detail |
+|---|---|
+| **Returns** | `Stream<T>` (same stream) |
+| **Argument** | `Consumer<T>` → `T → void` |
+| **Use for** | Debugging intermediate steps only |
+
+```java
+employees.stream()
+    .filter(e -> e.dept().equals("Engineering"))
+    .peek(e -> System.out.println("After filter: " + e.name()))
+    .map(Employee::salary)
+    .peek(s -> System.out.println("After map: " + s))
+    .collect(toList());
+
+// Output:
+// After filter: Manoj
+// After map: 85000.0
+// After filter: Kumar
+// After map: 92000.0
+```
+
+---
+
+### `mapToInt()`, `mapToDouble()`, `mapToLong()` — Primitive Streams
+
+| | Detail |
+|---|---|
+| **Returns** | `IntStream` / `DoubleStream` / `LongStream` |
+| **Why use** | Unlocks `sum()`, `average()`, `min()`, `max()` directly |
+
+```java
+// mapToDouble → enables sum(), average() on salary
+double totalSalary = employees.stream()
+    .mapToDouble(Employee::salary)
+    .sum();
+// 555000.0
+
+OptionalDouble avgSalary = employees.stream()
+    .mapToDouble(Employee::salary)
+    .average();
+// OptionalDouble[79285.71...]
+
+int totalAge = employees.stream()
+    .mapToInt(Employee::age)
+    .sum();
+
+// IntStream.range — avoid mapToInt when you just need a range
+int sumOf1to10 = IntStream.rangeClosed(1, 10).sum(); // 55
+```
+
+---
+
+## PART 3 — Terminal Operations
+
+---
+
+### `collect(Collector)` — The Most Powerful Terminal Op
+
+| Collector | Returns | Use for |
+|---|---|---|
+| `toList()` | `List<T>` | Collect to List |
+| `toSet()` | `Set<T>` | Collect to Set (deduped) |
+| `toMap(k, v)` | `Map<K,V>` | Collect to Map |
+| `joining()` | `String` | Join strings |
+| `joining(delim, prefix, suffix)` | `String` | Join with formatting |
+| `groupingBy(fn)` | `Map<K, List<T>>` | Group by field |
+| `groupingBy(fn, downstream)` | `Map<K, R>` | Group + transform |
+| `counting()` | `Long` | Count per group |
+| `summingDouble(fn)` | `Double` | Sum per group |
+| `averagingDouble(fn)` | `Double` | Average per group |
+| `partitioningBy(pred)` | `Map<Boolean, List<T>>` | Split into true/false |
+| `toUnmodifiableList()` | `List<T>` | Immutable list |
+
+```java
+// ── toList ──
+List<String> names = employees.stream()
+    .map(Employee::name)
+    .collect(Collectors.toList());
+
+// ── toSet ── (removes duplicates)
+Set<String> depts = employees.stream()
+    .map(Employee::dept)
+    .collect(Collectors.toSet());
+
+// ── toMap ── (name → salary)
+Map<String, Double> salaryMap = employees.stream()
+    .collect(Collectors.toMap(
+        Employee::name,             // key
+        Employee::salary            // value
+    ));
+// {Manoj=85000.0, Kumar=92000.0, ...}
+
+// ── joining ──
+String namesCsv = employees.stream()
+    .map(Employee::name)
+    .collect(Collectors.joining(", "));
+// "Manoj, Kumar, Rahul, Priya, Raj, Sneha, Vikram"
+
+String formatted = employees.stream()
+    .map(Employee::name)
+    .collect(Collectors.joining(", ", "[", "]"));
+// "[Manoj, Kumar, Rahul, Priya, Raj, Sneha, Vikram]"
+
+// ── groupingBy ── (most asked in interviews)
+Map<String, List<Employee>> byDept = employees.stream()
+    .collect(Collectors.groupingBy(Employee::dept));
+// {Engineering=[Manoj, Kumar, Vikram], HR=[Rahul, Priya], Finance=[Raj, Sneha]}
+
+// groupingBy + count
+Map<String, Long> countByDept = employees.stream()
+    .collect(Collectors.groupingBy(
+        Employee::dept,
+        Collectors.counting()       // downstream collector
+    ));
+// {Engineering=3, HR=2, Finance=2}
+
+// groupingBy + average salary
+Map<String, Double> avgSalaryByDept = employees.stream()
+    .collect(Collectors.groupingBy(
+        Employee::dept,
+        Collectors.averagingDouble(Employee::salary)
+    ));
+// {Engineering=90666.66, HR=58500.0, Finance=83000.0}
+
+// groupingBy + sum salary
+Map<String, Double> totalSalaryByDept = employees.stream()
+    .collect(Collectors.groupingBy(
+        Employee::dept,
+        Collectors.summingDouble(Employee::salary)
+    ));
+
+// groupingBy + extract names only (toList of names, not employees)
+Map<String, List<String>> namesByDept = employees.stream()
+    .collect(Collectors.groupingBy(
+        Employee::dept,
+        Collectors.mapping(Employee::name, Collectors.toList())
+    ));
+// {Engineering=[Manoj, Kumar, Vikram], HR=[Rahul, Priya], Finance=[Raj, Sneha]}
+
+// ── partitioningBy ── (splits into true/false)
+Map<Boolean, List<Employee>> partition = employees.stream()
+    .collect(Collectors.partitioningBy(e -> e.salary() > 80000));
+// {true=[Manoj, Kumar, Raj, Sneha, Vikram], false=[Rahul, Priya]}
+```
+
+---
+
+### `reduce()` — Fold stream into single value
+
+| | Detail |
+|---|---|
+| **Returns** | `Optional<T>` or `T` (if identity provided) |
+| **Argument** | `BinaryOperator<T>` → `(T, T) → T` |
+| **Think of it as** | Manual aggregation |
+
+```java
+// Sum manually
+Optional<Double> total = employees.stream()
+    .map(Employee::salary)
+    .reduce((a, b) -> a + b);
+// Optional[555000.0]
+
+// With identity (no Optional needed)
+double total = employees.stream()
+    .map(Employee::salary)
+    .reduce(0.0, Double::sum);
+// 555000.0
+
+// Max salary via reduce
+Optional<Double> max = employees.stream()
+    .map(Employee::salary)
+    .reduce(Double::max);
+
+// String concatenation
+String allNames = names.stream()
+    .reduce("", (a, b) -> a + (a.isEmpty() ? "" : ", ") + b);
+// "Manoj, Kumar, Rahul..."
+```
+
+---
+
+### `count()`, `min()`, `max()`, `sum()`, `average()`
+
+```java
+// count
+long total = employees.stream()
+    .filter(e -> e.dept().equals("Engineering"))
+    .count();
+// 3
+
+// min + max (need Comparator)
+Optional<Employee> lowestPaid = employees.stream()
+    .min(Comparator.comparingDouble(Employee::salary));
+
+Optional<Employee> highestPaid = employees.stream()
+    .max(Comparator.comparingDouble(Employee::salary));
+
+// sum, average — only on primitive streams
+double totalSalary = employees.stream()
+    .mapToDouble(Employee::salary)
+    .sum();
+
+OptionalDouble avg = employees.stream()
+    .mapToDouble(Employee::salary)
+    .average();
+
+// summaryStatistics — all at once
+DoubleSummaryStatistics stats = employees.stream()
+    .mapToDouble(Employee::salary)
+    .summaryStatistics();
+
+stats.getCount();    // 7
+stats.getSum();      // 555000.0
+stats.getMin();      // 55000.0
+stats.getMax();      // 95000.0
+stats.getAverage();  // 79285.71
+```
+
+---
+
+### `anyMatch()`, `allMatch()`, `noneMatch()`
+
+| | Returns | True when |
+|---|---|---|
+| `anyMatch` | `boolean` | At least ONE element matches |
+| `allMatch` | `boolean` | ALL elements match |
+| `noneMatch` | `boolean` | NO element matches |
+
+```java
+boolean anyHighEarner = employees.stream()
+    .anyMatch(e -> e.salary() > 90000);
+// true (Kumar, Sneha, Vikram)
+
+boolean allAboveMinWage = employees.stream()
+    .allMatch(e -> e.salary() > 30000);
+// true
+
+boolean noneInMarketing = employees.stream()
+    .noneMatch(e -> e.dept().equals("Marketing"));
+// true
+```
+
+---
+
+### `findFirst()` / `findAny()`
+
+| | Returns | Use |
+|---|---|---|
+| `findFirst()` | `Optional<T>` | First element (deterministic) |
+| `findAny()` | `Optional<T>` | Any element (faster in parallel) |
+
+```java
+Optional<Employee> first = employees.stream()
+    .filter(e -> e.dept().equals("HR"))
+    .findFirst();
+// Optional[Rahul]
+
+first.ifPresent(e -> System.out.println(e.name())); // "Rahul"
+String name = first.map(Employee::name).orElse("Not found");
+```
+
+---
+
+### `forEach()` — Consume each element
+
+```java
+// forEach — no return, just consume
+employees.stream()
+    .filter(e -> e.salary() > 80000)
+    .forEach(e -> System.out.println(e.name() + ": " + e.salary()));
+
+// forEachOrdered — maintains order in parallel streams
+employees.parallelStream()
+    .forEachOrdered(e -> System.out.println(e.name()));
+```
+
+---
+
+## PART 4 — Interview Tips & Mental Shortcuts
+
+---
+
+### Tip 1 — The 3-Question Framework
+
+Before writing any stream, ask yourself:
+
+```
+1. What is my SOURCE?
+   → List, Set, Map.entrySet(), array, Stream.of()
+
+2. What SHAPE do I want the output?
+   → Single value   → reduce / count / sum / findFirst
+   → boolean        → anyMatch / allMatch / noneMatch
+   → List/Set       → collect(toList()) / collect(toSet())
+   → Map            → collect(toMap()) / collect(groupingBy())
+   → String         → collect(joining())
+
+3. What TRANSFORMATIONS do I need?
+   → Filter something?  → filter()
+   → Transform?         → map()
+   → Flatten?           → flatMap()
+   → Deduplicate?       → distinct()
+   → Sort?              → sorted()
+   → Limit?             → limit() / skip()
+```
+
+---
+
+### Tip 2 — Terminal Operation Decision Tree
+
+```
+What do you want back?
+│
+├── A List             → .collect(toList())
+├── A Set              → .collect(toSet())
+├── A Map              → .collect(toMap(k, v))
+│                        .collect(groupingBy(fn))
+│
+├── A String           → .collect(joining(", "))
+│
+├── A number
+│   ├── count          → .count()
+│   ├── sum            → .mapToDouble().sum()
+│   ├── avg            → .mapToDouble().average()
+│   └── custom         → .reduce(0, (a,b) -> a+b)
+│
+├── One element
+│   ├── first match    → .filter().findFirst()
+│   ├── max/min        → .max(Comparator) / .min(Comparator)
+│   └── any match      → .filter().findAny()
+│
+└── boolean
+    ├── any true?      → .anyMatch()
+    ├── all true?      → .allMatch()
+    └── none true?     → .noneMatch()
+```
+
+---
+
+### Tip 3 — `map` vs `flatMap` — One Line Rule
+
+```
+Mapping function returns a plain value?    → map()
+Mapping function returns a List/Stream?    → flatMap()
+
+map(e -> e.name())                   → name is String    → map ✅
+map(e -> e.skills())                 → skills is List    → flatMap ✅
+flatMap(e -> e.skills().stream())    → correct flatMap
+```
+
+---
+
+### Tip 4 — `groupingBy` Patterns (Most Asked)
+
+```java
+// Pattern: groupingBy(field)
+// → Map<FieldType, List<T>>
+.collect(groupingBy(Employee::dept))
+
+// Pattern: groupingBy + counting
+// → Map<FieldType, Long>
+.collect(groupingBy(Employee::dept, counting()))
+
+// Pattern: groupingBy + summing
+// → Map<FieldType, Double>
+.collect(groupingBy(Employee::dept, summingDouble(Employee::salary)))
+
+// Pattern: groupingBy + extract names
+// → Map<FieldType, List<String>>
+.collect(groupingBy(Employee::dept,
+         mapping(Employee::name, toList())))
+
+// Pattern: groupingBy + max salary per group
+// → Map<FieldType, Optional<Employee>>
+.collect(groupingBy(Employee::dept,
+         maxBy(Comparator.comparingDouble(Employee::salary))))
+```
+
+---
+
+### Tip 5 — Common Interview Problems + Instant Pattern
+
+```
+Problem                              Pattern
+──────────────────────────────────────────────────────────────────
+Find highest paid employee         → max(comparingDouble(::salary))
+Find all dept names (unique)       → map(::dept).distinct()
+Count employees per dept           → groupingBy(::dept, counting())
+Employees earning > 80k            → filter(e -> e.salary() > 80000)
+Names of Engineering employees     → filter(dept).map(::name)
+Total salary of all employees      → mapToDouble(::salary).sum()
+Average salary per dept            → groupingBy(::dept, averagingDouble(::salary))
+Top 3 earners                      → sorted(reversed).limit(3)
+Is anyone in Marketing?            → anyMatch(dept == Marketing)
+Comma-separated names              → map(::name).collect(joining(", "))
+Group names by dept                → groupingBy(::dept, mapping(::name, toList()))
+Partition by salary > 80k          → partitioningBy(e -> e.salary() > 80000)
+Second highest salary              → sorted(reversed).skip(1).findFirst()
+```
+
+---
+
+### Tip 6 — Optional Handling After Terminal Ops
+
+```java
+// findFirst / min / max return Optional — always handle it
+Optional<Employee> result = employees.stream()
+    .filter(e -> e.dept().equals("HR"))
+    .findFirst();
+
+// 3 ways to unwrap Optional:
+result.get()                        // ❌ throws if empty — avoid
+result.orElse(defaultEmployee)      // ✅ return default
+result.orElseThrow(() ->            // ✅ throw custom exception
+    new RuntimeException("Not found"))
+result.map(Employee::name)          // ✅ transform if present
+      .orElse("Unknown")
+result.ifPresent(e ->               // ✅ run only if present
+    System.out.println(e.name()))
+```
+
+---
+
+### Tip 7 — Avoid These Common Mistakes
+
+```java
+// ❌ MISTAKE 1 — reusing a stream
+Stream<Employee> s = employees.stream();
+s.filter(...).collect(toList());
+s.map(...).collect(toList());       // IllegalStateException — stream already consumed
+
+// ✅ FIX — create new stream each time
+employees.stream().filter(...).collect(toList());
+employees.stream().map(...).collect(toList());
+
+
+// ❌ MISTAKE 2 — map when you need flatMap
+List<List<String>> nested = ...;
+nested.stream()
+    .map(List::stream)              // gives Stream<Stream<String>>
+    .collect(toList());             // WRONG
+
+// ✅ FIX
+nested.stream()
+    .flatMap(List::stream)
+    .collect(toList());
+
+
+// ❌ MISTAKE 3 — forEach to build a list
+List<String> result = new ArrayList<>();
+employees.stream()
+    .forEach(e -> result.add(e.name()));  // side-effect — avoid
+
+// ✅ FIX
+List<String> result = employees.stream()
+    .map(Employee::name)
+    .collect(toList());
+
+
+// ❌ MISTAKE 4 — modifying source inside stream
+employees.stream()
+    .forEach(e -> employees.remove(e)); // ConcurrentModificationException
+
+// ✅ FIX — collect first, then remove
+List<Employee> toRemove = employees.stream()
+    .filter(e -> e.salary() < 60000)
+    .collect(toList());
+employees.removeAll(toRemove);
+```
+
+---
+
+### Tip 8 — The Static Import Shortcut
+
+Always static import Collectors — saves time in interviews:
+
+```java
+import static java.util.stream.Collectors.*;
+
+// Without static import:
+.collect(Collectors.groupingBy(Employee::dept, Collectors.counting()))
+
+// With static import — cleaner:
+.collect(groupingBy(Employee::dept, counting()))
+```
+
+---
+
+### Full Cheat Sheet — One Page
+
+```
+SOURCE
+  list.stream()          parallelStream()
+  Stream.of(a,b,c)       IntStream.range(1,10)
+  Stream.iterate(0, n->n+2).limit(10)
+
+FILTER / SLICE
+  filter(pred)           distinct()
+  limit(n)               skip(n)
+  takeWhile(pred)        dropWhile(pred)   [Java 9+]
+
+TRANSFORM
+  map(fn)                flatMap(fn)
+  mapToInt/Double/Long   sorted(comparator)
+  peek(consumer)
+
+TERMINAL — COLLECT
+  collect(toList())      collect(toSet())
+  collect(toMap(k,v))    collect(joining(", "))
+  collect(groupingBy(fn))
+  collect(groupingBy(fn, counting()))
+  collect(groupingBy(fn, summingDouble(fn)))
+  collect(groupingBy(fn, mapping(fn, toList())))
+  collect(partitioningBy(pred))
+
+TERMINAL — AGGREGATE
+  count()                sum()  [on IntStream/DoubleStream]
+  min(comp)              max(comp)
+  average()              summaryStatistics()
+  reduce(identity, op)
+
+TERMINAL — MATCH / FIND
+  anyMatch(pred)         allMatch(pred)     noneMatch(pred)
+  findFirst()            findAny()
+
+TERMINAL — CONSUME
+  forEach(consumer)      forEachOrdered(consumer)
+  toArray()
+```
+
+The framework is: **source → filter → transform → terminal**. If you can answer "what shape is my output?" you already know which terminal op to use. Everything else is just filtering and transforming to get there. Want me to now give you **50 stream interview problems with solutions** in all three styles — loop, collection, and stream?
     
 </script>
 
