@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+# Sliding Window in Circuit Breaker — Deep Dive
+
+---
+
+## What is a Sliding Window?
+
+When a Circuit Breaker decides **"should I trip?"**, it needs to look at **recent call history** — not all calls ever made.
+
+A **Sliding Window** is that **recent call history buffer** the CB looks at to calculate failure rate.
+
+```
+The question CB asks:
+"Out of my RECENT calls, what % failed?"
+
+If failure% >= threshold → OPEN
+If failure% <  threshold → stay CLOSED
+
+"RECENT" is defined by the Sliding Window.
+```
+
+---
+
+## The Core Problem It Solves
+
+```
+Imagine your service made 10,000 calls total:
+  9,000 were SUCCESS  (old, from yesterday)
+  1,000 were FAIL     (new, from last 1 minute)
+
+Without sliding window:
+  failure rate = 1000/10000 = 10% → CB stays CLOSED ← WRONG
+  (old successes are masking current failures)
+
+With sliding window (last 10 calls):
+  [ FAIL FAIL FAIL FAIL FAIL FAIL FAIL FAIL OK OK ]
+  failure rate = 80% → CB trips OPEN ← CORRECT
+```
+
+> Sliding window ensures CB reacts to **current behavior**, not historical data.
+
+---
+
+## Two Types of Sliding Windows
+
+```
+Sliding Window Types
+│
+├── 1. COUNT_BASED   → fixed number of calls
+│                      "look at last N CALLS"
+│
+└── 2. TIME_BASED    → fixed time duration
+                       "look at last N SECONDS"
+```
+
+---
+
+## Type 1 — COUNT_BASED
+
+### What it means
+
+Maintains a **circular buffer of the last N calls**. Every new call pushes out the oldest one.
+
+```yaml
+sliding-window-type: COUNT_BASED
+sliding-window-size: 5          # track last 5 calls
+```
+
+### How it works — Visual
+
+```
+Call sequence: S=Success, F=Failure
+
+Call 1:  [ S ]                    → buffer: [S]         → rate: 0%
+Call 2:  [ S  S ]                 → buffer: [S,S]       → rate: 0%
+Call 3:  [ S  S  F ]              → buffer: [S,S,F]     → rate: 33%
+Call 4:  [ S  S  F  F ]           → buffer: [S,S,F,F]   → rate: 50%
+Call 5:  [ S  S  F  F  F ]        → buffer: [S,S,F,F,F] → rate: 60% → OPEN ✅
+                                    (threshold was 50%)
+
+Call 6 arrives (window slides):
+Old: [ S  S  F  F  F ]
+New: [ S  F  F  F  S ]  ← first S pushed out, new S added at end
+         ↑
+     oldest S removed
+```
+
+### Circular Buffer Internals
+
+```
+SIZE = 5 circular buffer:
+
+Position:   [0]  [1]  [2]  [3]  [4]
+            ─────────────────────────
+After c1:   [ S ] [  ] [  ] [  ] [  ]
+After c2:   [ S ] [ S ] [  ] [  ] [  ]
+After c3:   [ S ] [ S ] [ F ] [  ] [  ]
+After c4:   [ S ] [ S ] [ F ] [ F ] [  ]
+After c5:   [ S ] [ S ] [ F ] [ F ] [ F ]   ← full, rate=60%
+After c6:   [ S ] [ S ] [ F ] [ F ] [ S ]   ← c1(S) evicted, c6(S) added
+              ↑ overwritten
+```
+
+### When to use COUNT_BASED
+
+```
+✅ High traffic services    → enough calls per second to fill window fast
+✅ Consistent call rate     → calls come in steadily
+✅ Payment, Auth, Order     → always-active services
+
+❌ Low traffic services    → window fills slowly, stale data stays long
+❌ Batch jobs              → called once per hour — window never refreshes
+```
+
+### Example
+
+```
+E-commerce checkout service: 1000 calls/minute
+Window size: 10 calls
+→ Window refreshes every ~0.6 seconds
+→ CB reacts almost in real time ✅
+
+Report generation service: 1 call/hour
+Window size: 10 calls
+→ Window takes 10 HOURS to fill
+→ CB based on calls from hours ago ❌ → use TIME_BASED instead
+```
+
+---
+
+## Type 2 — TIME_BASED
+
+### What it means
+
+Tracks all calls made in the **last N seconds** using epoch-second buckets. No fixed count — could be 5 calls or 5000 calls in that window.
+
+```yaml
+sliding-window-type: TIME_BASED
+sliding-window-size: 10         # track last 10 SECONDS
+```
+
+### How it works — Visual
+
+```
+Timeline (each cell = 1 second):
+
+t=1s:  [ S S S ]                    calls in window: 3,  failures: 0,  rate: 0%
+t=2s:  [ S S S | F F ]              calls in window: 5,  failures: 2,  rate: 40%
+t=3s:  [ S S S | F F | F ]          calls in window: 6,  failures: 3,  rate: 50% → OPEN
+t=4s:  CB is OPEN — no calls allowed
+
+After wait-duration expires → HALF_OPEN
+t=14s: [ S ]                        window resets, testing begins
+t=15s: [ S | S ]                    2 successes → CLOSED ✅
+
+
+What "slides" here:
+t=11s: window covers t=1s to t=11s
+t=12s: window covers t=2s to t=12s  ← t=1s bucket dropped off
+t=13s: window covers t=3s to t=13s  ← t=2s bucket dropped off
+```
+
+### Bucket-Based Storage Internals
+
+```
+TIME_BASED uses per-second buckets internally:
+
+Second  Bucket   Calls   Failures
+──────────────────────────────────
+  1      [b1]    [ S S ]    0
+  2      [b2]    [ F ]      1
+  3      [b3]    [ F F ]    2
+  4      [b4]    [ S ]      0
+  ...
+  10     [b10]   [ S S S ]  0
+
+At t=11s:
+  b1 drops off (older than 10s)
+  b11 added for new calls
+  Rate recalculated from b2 to b11
+```
+
+### When to use TIME_BASED
+
+```
+✅ Low traffic services     → calls are infrequent
+✅ Batch / scheduled jobs   → called periodically
+✅ Time-sensitive SLAs      → "in last 30s, how bad is it?"
+✅ Burst traffic patterns   → traffic varies a lot
+
+❌ Very high traffic        → too many calls in window → harder to manage
+❌ When call count matters  → if you care about N calls not N seconds
+```
+
+### Example
+
+```
+Report service: 1 call per minute
+TIME_BASED window: 60 seconds
+
+t=0s:   call → FAIL
+t=1s:   call → FAIL
+t=2s:   call → FAIL
+→ 3 failures in 60s window, rate = 100% → OPEN ✅
+(COUNT_BASED with size=10 would need 10 calls first — minimum-number-of-calls)
+
+vs COUNT_BASED:
+  Only 3 calls made — minimum-number-of-calls=5 not reached → never trips ❌
+```
+
+---
+
+## COUNT_BASED vs TIME_BASED — Direct Comparison
+
+```
+Scenario: window size = 10
+
+COUNT_BASED                          TIME_BASED
+────────────────────────────────     ────────────────────────────────
+Unit: number of CALLS                Unit: number of SECONDS
+"last 10 calls"                      "last 10 seconds"
+
+High traffic (100 calls/sec):        High traffic (100 calls/sec):
+  window refreshes every 0.1s ✅       window has 1000 calls ✅
+
+Low traffic (1 call/hour):           Low traffic (1 call/hour):
+  window takes 10 hours to fill ❌    window has 0-1 calls — need minimum ✅
+  stale data problem ❌
+
+Memory:                              Memory:
+  fixed: always N entries             variable: depends on call volume
+
+Predictable:                         Predictable:
+  always exactly N calls              varies — could be 5 or 5000 calls
+
+Best for:                            Best for:
+  consistent high traffic             variable/low traffic
+  simple mental model                 time-sensitive detection
+```
+
+---
+
+## The `minimum-number-of-calls` Setting
+
+Both types need this — prevents tripping on too little data.
+
+```yaml
+minimum-number-of-calls: 5    # need at least 5 calls before evaluating
+```
+
+```
+Without minimum-number-of-calls:
+
+Call 1: FAIL → failure rate = 100% → OPEN immediately ← WRONG
+  (1 failure out of 1 call shouldn't trip the breaker)
+
+With minimum-number-of-calls: 5:
+
+Call 1: FAIL → only 1 call, skip evaluation
+Call 2: FAIL → only 2 calls, skip evaluation
+Call 3: FAIL → only 3 calls, skip evaluation
+Call 4: FAIL → only 4 calls, skip evaluation
+Call 5: FAIL → 5 calls reached → evaluate → 100% → OPEN ✅
+```
+
+---
+
+## Full Configuration Comparison
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+
+      # COUNT_BASED — for Payment Service (high traffic)
+      paymentService:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10          # last 10 CALLS
+        failure-rate-threshold: 50       # trip if 50%+ fail
+        minimum-number-of-calls: 5       # need 5 calls first
+        wait-duration-in-open-state: 10s
+        permitted-calls-in-half-open-state: 3
+
+      # TIME_BASED — for Report Service (low traffic)
+      reportService:
+        sliding-window-type: TIME_BASED
+        sliding-window-size: 60          # last 60 SECONDS
+        failure-rate-threshold: 50
+        minimum-number-of-calls: 3       # lower — fewer calls expected
+        wait-duration-in-open-state: 30s
+        permitted-calls-in-half-open-state: 2
+```
+
+---
+
+## Decision Guide — Which One to Pick?
+
+```
+How frequently are calls made?
+│
+├── Very frequently (10+ per second)
+│   └── COUNT_BASED ✅
+│       window fills fast, reacts quickly
+│
+├── Moderately (1-10 per second)
+│   └── Either works — COUNT_BASED simpler
+│
+├── Infrequently (< 1 per second)
+│   └── TIME_BASED ✅
+│       COUNT_BASED window fills too slowly
+│
+└── Unpredictable / bursty traffic
+    └── TIME_BASED ✅
+        not affected by traffic volume gaps
+```
+
+---
+
+## Summary — One Line Each
+
+```
+COUNT_BASED  →  "Trip if X% of my last N CALLS failed"
+               Buffer = circular array of N call results
+               Slides: each new call evicts the oldest call
+               Best for: high, consistent traffic
+
+TIME_BASED   →  "Trip if X% of calls in the last N SECONDS failed"
+               Buffer = per-second buckets covering N seconds
+               Slides: each passing second evicts the oldest second
+               Best for: low or variable traffic
+
+Both need:
+  failure-rate-threshold   → what % triggers OPEN
+  minimum-number-of-calls  → how many calls before evaluating
+  wait-duration-in-open-state → how long to stay OPEN
+```
+
+That's the complete picture of sliding windows. The key mental model is — **COUNT_BASED counts calls, TIME_BASED counts seconds**. Want me to show how sliding window metrics appear in Actuator and how to monitor them in real time?
+    
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>

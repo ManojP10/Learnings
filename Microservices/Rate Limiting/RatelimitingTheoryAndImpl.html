@@ -1,0 +1,2037 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notes</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- ✅ Code Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- ✅ Diagram Support -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+<h1>My Notes</h1>
+<div id="toc"></div>
+<!-- <div class="content" id="content"> -->
+<div id="content"></div>
+<script id="markdown" type="text/plain">
+
+# Rate Limiting in Microservices — Complete Guide
+
+---
+
+## What is Rate Limiting?
+
+Rate Limiting controls **how many requests** a client can make to your service **in a given time window**.
+
+```
+Without Rate Limiting:              With Rate Limiting:
+─────────────────────               ─────────────────────
+Client → 10,000 req/sec            Client → 100 req/sec allowed
+       → server crashes            101st req → 429 Too Many Requests
+       → other clients affected    Other clients → unaffected
+```
+
+> Rate limiting protects your service from **abuse, DoS attacks, and accidental overload** — whether from external clients or internal microservices.
+
+---
+
+## Rate Limiting vs Circuit Breaker vs Bulkhead
+
+This is a very common interview confusion point:
+
+```
+Circuit Breaker  → protects CALLER from a failing DOWNSTREAM service
+                   "Stop calling — they are down"
+
+Rate Limiter     → protects YOUR service from too many INCOMING requests
+                   "Slow down — you are calling too fast"
+
+Bulkhead         → limits concurrent requests to isolate failures
+                   "Only N threads allowed — others wait or fail"
+```
+
+---
+
+## Algorithms — The Theory
+
+There are **4 main algorithms**. This is heavily asked in senior interviews.
+
+---
+
+### Algorithm 1 — Fixed Window Counter
+
+```
+Divide time into fixed windows.
+Count requests per window.
+Reject if count exceeds limit.
+
+Window: 1 minute, Limit: 100 req
+
+|--- 0-60s ---|--- 60-120s ---|--- 120-180s ---|
+     100 req        100 req         100 req
+     (allowed)      (allowed)       (allowed)
+```
+
+**The Problem — Boundary Burst:**
+
+```
+Window: 1 min, Limit: 100
+
+     |--- window 1 ---|--- window 2 ---|
+...  |  99 req at 59s | 100 req at 61s |  ...
+                      ↑
+              198 requests in 2 seconds!
+              (99 at end of w1 + 99 at start of w2)
+```
+
+**Pros:** Simple, low memory
+**Cons:** Boundary burst problem — double the allowed rate at window edges
+
+---
+
+### Algorithm 2 — Sliding Window Log
+
+```
+Keep a log (timestamp list) of every request.
+On new request:
+  1. Remove timestamps older than window
+  2. Count remaining
+  3. If count < limit → allow + add timestamp
+  4. If count >= limit → reject
+
+Window: 60s, Limit: 3
+
+Timeline:
+t=10s  → log=[10]           count=1 → ALLOW
+t=20s  → log=[10,20]        count=2 → ALLOW
+t=30s  → log=[10,20,30]     count=3 → ALLOW
+t=40s  → log=[10,20,30,40]  count=4 → REJECT (429)
+t=71s  → log=[20,30,40]     t=10 expired → count=3 → ALLOW
+```
+
+**Pros:** Accurate — no boundary burst
+**Cons:** High memory — stores every request timestamp
+
+---
+
+### Algorithm 3 — Sliding Window Counter
+
+```
+Hybrid of Fixed Window + Sliding Window Log.
+Uses weighted count from previous window.
+
+Formula:
+  current_count =
+    (prev_window_count × overlap%) + current_window_count
+
+Window: 60s, Limit: 100
+
+|--- prev window ---|--- current window ---|
+       80 req              30 req
+                    ↑ 75% into current window
+                    → overlap with prev = 25%
+
+current_count = (80 × 25%) + 30 = 20 + 30 = 50 → ALLOW ✅
+```
+
+**Pros:** Accurate, low memory (only 2 counters per window)
+**Cons:** Slightly approximate (weighted estimate, not exact)
+
+---
+
+### Algorithm 4 — Token Bucket ⭐ (Most Used)
+
+```
+A bucket holds tokens.
+Each request consumes 1 token.
+Tokens refill at a fixed rate.
+If bucket empty → request rejected.
+
+Bucket capacity: 10 tokens
+Refill rate: 2 tokens/second
+
+t=0s:  bucket=[10 tokens]
+req1:  bucket=[9]  → ALLOW
+req2:  bucket=[8]  → ALLOW
+...
+req10: bucket=[0]  → ALLOW
+req11: bucket=[0]  → REJECT (429) ← no tokens left
+t=1s:  bucket=[2]  → refilled
+req12: bucket=[1]  → ALLOW
+```
+
+**Allows bursting** up to bucket capacity, then throttles to refill rate.
+
+**Pros:** Allows controlled bursts, smooth rate limiting
+**Cons:** Slightly complex, small memory per client
+
+---
+
+### Algorithm 5 — Leaky Bucket
+
+```
+Requests enter a queue (bucket).
+Requests processed at FIXED rate (leak rate).
+If queue full → request rejected.
+
+Queue size: 5, Leak rate: 2 req/sec
+
+Burst of 10 requests arrives:
+  5 enter queue → 5 rejected (queue full)
+  Queue drains at 2/sec → smooth output
+
+Input:   ▓▓▓▓▓▓▓▓▓▓  (burst of 10)
+Queue:   [▓▓▓▓▓]       (5 queued, 5 rejected)
+Output:  ▓ ▓ ▓ ▓ ▓     (smooth, 2/sec)
+```
+
+**Pros:** Smooths out bursts — consistent output rate
+**Cons:** High latency for queued requests, no burst allowance
+
+---
+
+### Algorithm Comparison
+
+| Algorithm | Burst Allowed | Memory | Accuracy | Use Case |
+|---|---|---|---|---|
+| Fixed Window | ❌ (boundary burst) | Low | Low | Simple counters |
+| Sliding Window Log | ✅ No burst | High | High | Strict per-user |
+| Sliding Window Counter | Limited | Low | Medium | APIs at scale |
+| Token Bucket | ✅ Controlled | Low | High | Most APIs ⭐ |
+| Leaky Bucket | ❌ Smoothed | Medium | High | Payment queues |
+
+---
+
+## Where to Apply Rate Limiting
+
+```
+Client
+  │
+  ▼
+API Gateway          ← Layer 1: Global rate limit (Kong, AWS API GW)
+  │
+  ▼
+Load Balancer        ← Layer 2: Per-instance limits (Nginx, HAProxy)
+  │
+  ▼
+Microservice         ← Layer 3: Per-endpoint / per-user (Resilience4j)
+  │
+  ▼
+DB / External API    ← Layer 4: Outbound rate limiting
+```
+
+---
+
+## Rate Limiting Strategies
+
+```
+1. Global          → all clients share one limit
+                     "100 req/min total for this endpoint"
+
+2. Per Client/IP   → each client has own limit
+                     "100 req/min per API key"
+
+3. Per User        → per authenticated user
+                     "100 req/min per userId"
+
+4. Per Endpoint    → different limits per route
+                     GET /orders → 1000/min
+                     POST /orders → 100/min
+                     DELETE /orders → 10/min
+
+5. Tiered          → different limits per plan
+                     FREE tier    → 100/min
+                     PRO tier     → 1000/min
+                     ENTERPRISE   → unlimited
+```
+
+---
+
+## Implementation — Resilience4j Rate Limiter
+
+### Dependency
+
+```xml
+<dependency>
+    <groupId>io.github.resilience4j</groupId>
+    <artifactId>resilience4j-spring-boot3</artifactId>
+    <version>2.1.0</version>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-aop</artifactId>
+</dependency>
+```
+
+### Configuration `application.yml`
+
+```yaml
+resilience4j:
+  ratelimiter:
+    instances:
+      orderService:
+        limit-for-period: 10          # max 10 requests
+        limit-refresh-period: 1s      # per 1 second window
+        timeout-duration: 0s          # wait 0s if limit exceeded → reject immediately
+        # timeout-duration: 500ms     # wait 500ms for a slot before rejecting
+
+      # Lenient limit for read operations
+      orderReadService:
+        limit-for-period: 100
+        limit-refresh-period: 1s
+        timeout-duration: 0s
+
+      # Strict limit for write operations
+      orderWriteService:
+        limit-for-period: 10
+        limit-refresh-period: 1s
+        timeout-duration: 0s
+```
+
+**Key settings explained:**
+
+```
+limit-for-period    → tokens available per refresh period
+limit-refresh-period → how often tokens refill
+timeout-duration    → how long to WAIT for a token before giving up
+
+Example:
+  limit-for-period: 10
+  limit-refresh-period: 1s
+  = 10 requests per second allowed
+
+  timeout-duration: 0s   → reject immediately if no token
+  timeout-duration: 500ms → wait up to 500ms for a token
+```
+
+---
+
+### Service Layer
+
+```java
+// service/OrderService.java
+@Service
+@Slf4j
+public class OrderService {
+
+    private final OrderRepository orderRepository;
+
+    public OrderService(OrderRepository orderRepository) {
+        this.orderRepository = orderRepository;
+    }
+
+    // ── Basic Rate Limiter ──
+    @RateLimiter(name = "orderService", fallbackMethod = "rateLimitFallback")
+    public List<Order> getAllOrders() {
+        log.info("Fetching all orders");
+        return orderRepository.findAll();
+    }
+
+    // ── Read endpoint — higher limit ──
+    @RateLimiter(name = "orderReadService", fallbackMethod = "rateLimitFallback")
+    public Order getOrderById(String orderId) {
+        log.info("Fetching order: {}", orderId);
+        return orderRepository.findById(orderId)
+                .orElseThrow(() -> new OrderNotFoundException(orderId));
+    }
+
+    // ── Write endpoint — strict limit ──
+    @RateLimiter(name = "orderWriteService", fallbackMethod = "createOrderFallback")
+    public Order createOrder(OrderRequest request) {
+        log.info("Creating order for customerId={}", request.getCustomerId());
+        Order order = Order.builder()
+                .orderId(UUID.randomUUID().toString())
+                .customerId(request.getCustomerId())
+                .amount(request.getAmount())
+                .status("PLACED")
+                .createdAt(LocalDateTime.now())
+                .build();
+        return orderRepository.save(order);
+    }
+
+    // ── Fallback — same return type + Throwable ──
+    public List<Order> rateLimitFallback(Throwable ex) {
+        log.warn("Rate limit exceeded: {}", ex.getMessage());
+        throw new RateLimitExceededException("Too many requests. Please slow down.");
+    }
+
+    public Order createOrderFallback(OrderRequest request, Throwable ex) {
+        log.warn("Order creation rate limited for customerId={}", request.getCustomerId());
+        throw new RateLimitExceededException(
+            "Order creation limit exceeded. Max 10 orders/second allowed."
+        );
+    }
+}
+```
+
+---
+
+### Controller — Return 429
+
+```java
+// controller/OrderController.java
+@RestController
+@RequestMapping("/api/orders")
+@Slf4j
+public class OrderController {
+
+    private final OrderService orderService;
+
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    @GetMapping
+    public ResponseEntity<List<Order>> getAllOrders() {
+        return ResponseEntity.ok(orderService.getAllOrders());
+    }
+
+    @GetMapping("/{orderId}")
+    public ResponseEntity<Order> getOrder(@PathVariable String orderId) {
+        return ResponseEntity.ok(orderService.getOrderById(orderId));
+    }
+
+    @PostMapping
+    public ResponseEntity<Order> createOrder(@RequestBody @Valid OrderRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                             .body(orderService.createOrder(request));
+    }
+}
+
+// exception/GlobalExceptionHandler.java
+@RestControllerAdvice
+@Slf4j
+public class GlobalExceptionHandler {
+
+    // Handle rate limit exceeded
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimit(RateLimitExceededException ex) {
+
+        ErrorResponse error = ErrorResponse.builder()
+                .status(429)
+                .error("Too Many Requests")
+                .message(ex.getMessage())
+                .retryAfter("1 second")         // tell client when to retry
+                .timestamp(LocalDateTime.now())
+                .build();
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)   // 429
+                .header("Retry-After", "1")             // standard header
+                .header("X-RateLimit-Limit", "10")
+                .header("X-RateLimit-Remaining", "0")
+                .body(error);
+    }
+
+    // Resilience4j throws this when CB is open
+    @ExceptionHandler(RequestNotPermitted.class)
+    public ResponseEntity<ErrorResponse> handleRequestNotPermitted(RequestNotPermitted ex) {
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(ErrorResponse.builder()
+                        .status(429)
+                        .message("Rate limit exceeded")
+                        .build());
+    }
+}
+```
+
+---
+
+### Custom Exception + Error Response
+
+```java
+// exception/RateLimitExceededException.java
+public class RateLimitExceededException extends RuntimeException {
+    public RateLimitExceededException(String message) {
+        super(message);
+    }
+}
+
+// dto/ErrorResponse.java
+@Data
+@Builder
+public class ErrorResponse {
+    private int status;
+    private String error;
+    private String message;
+    private String retryAfter;
+    private LocalDateTime timestamp;
+}
+```
+
+---
+
+## Implementation — Redis Based Rate Limiter (Per User / Per IP)
+
+For **distributed** rate limiting — shared across all instances.
+
+```java
+// service/RedisRateLimiterService.java
+@Service
+@Slf4j
+public class RedisRateLimiterService {
+
+    private final RedisTemplate<String, String> redisTemplate;
+
+    private static final int MAX_REQUESTS = 100;       // 100 req
+    private static final int WINDOW_SECONDS = 60;      // per 60 seconds
+
+    public RedisRateLimiterService(RedisTemplate<String, String> redisTemplate) {
+        this.redisTemplate = redisTemplate;
+    }
+
+    // Fixed Window Counter using Redis INCR + EXPIRE
+    public boolean isAllowed(String clientId) {
+
+        String key = "rate_limit:" + clientId;   // e.g. rate_limit:user-123
+
+        // Atomic increment — returns new count
+        Long count = redisTemplate.opsForValue().increment(key);
+
+        if (count == null) {
+            log.error("Redis error for clientId={}", clientId);
+            return true;   // fail open — allow if Redis is down
+        }
+
+        // First request — set expiry
+        if (count == 1) {
+            redisTemplate.expire(key, Duration.ofSeconds(WINDOW_SECONDS));
+            log.debug("New window started for clientId={}", clientId);
+        }
+
+        long remaining = MAX_REQUESTS - count;
+        log.debug("clientId={} count={} remaining={}", clientId, count, remaining);
+
+        if (count > MAX_REQUESTS) {
+            log.warn("Rate limit exceeded for clientId={}", clientId);
+            return false;   // reject
+        }
+
+        return true;        // allow
+    }
+
+    // Get remaining requests for a client
+    public long getRemaining(String clientId) {
+        String key = "rate_limit:" + clientId;
+        String countStr = redisTemplate.opsForValue().get(key);
+        if (countStr == null) return MAX_REQUESTS;
+        return Math.max(0, MAX_REQUESTS - Long.parseLong(countStr));
+    }
+
+    // Get TTL of current window
+    public long getWindowResetSeconds(String clientId) {
+        String key = "rate_limit:" + clientId;
+        Long ttl = redisTemplate.getExpire(key, TimeUnit.SECONDS);
+        return ttl != null ? ttl : WINDOW_SECONDS;
+    }
+}
+```
+
+---
+
+### Rate Limiting Filter — Per IP / Per User
+
+```java
+// filter/RateLimitingFilter.java
+@Component
+@Order(2)
+@Slf4j
+public class RateLimitingFilter implements Filter {
+
+    private final RedisRateLimiterService rateLimiterService;
+
+    public RateLimitingFilter(RedisRateLimiterService rateLimiterService) {
+        this.rateLimiterService = rateLimiterService;
+    }
+
+    @Override
+    public void doFilter(ServletRequest req, ServletResponse res,
+                         FilterChain chain) throws IOException, ServletException {
+
+        HttpServletRequest  httpReq = (HttpServletRequest) req;
+        HttpServletResponse httpRes = (HttpServletResponse) res;
+
+        // Extract client identifier
+        String clientId = extractClientId(httpReq);
+
+        boolean allowed = rateLimiterService.isAllowed(clientId);
+        long remaining  = rateLimiterService.getRemaining(clientId);
+        long resetIn    = rateLimiterService.getWindowResetSeconds(clientId);
+
+        // Always add rate limit headers (good API practice)
+        httpRes.setHeader("X-RateLimit-Limit",     "100");
+        httpRes.setHeader("X-RateLimit-Remaining", String.valueOf(remaining));
+        httpRes.setHeader("X-RateLimit-Reset",     String.valueOf(resetIn));
+
+        if (!allowed) {
+            log.warn("Rate limit exceeded for clientId={}", clientId);
+            httpRes.setStatus(HttpStatus.TOO_MANY_REQUESTS.value()); // 429
+            httpRes.setContentType("application/json");
+            httpRes.setHeader("Retry-After", String.valueOf(resetIn));
+            httpRes.getWriter().write(buildErrorJson(resetIn));
+            return; // stop chain — don't proceed to controller
+        }
+
+        chain.doFilter(req, res); // allowed — proceed normally
+    }
+
+    private String extractClientId(HttpServletRequest req) {
+        // Priority: API Key → Auth user → IP
+        String apiKey = req.getHeader("X-API-Key");
+        if (apiKey != null) return "apikey:" + apiKey;
+
+        String userId = req.getHeader("X-User-ID");
+        if (userId != null) return "user:" + userId;
+
+        return "ip:" + getClientIp(req);
+    }
+
+    private String getClientIp(HttpServletRequest req) {
+        // Check proxy headers first
+        String forwarded = req.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim(); // first IP in chain
+        }
+        return req.getRemoteAddr();
+    }
+
+    private String buildErrorJson(long retryAfter) {
+        return String.format(
+            "{\"status\":429,\"error\":\"Too Many Requests\"," +
+            "\"message\":\"Rate limit exceeded\"," +
+            "\"retryAfter\":\"%ds\"}", retryAfter
+        );
+    }
+}
+```
+
+---
+
+## Tiered Rate Limiting (FREE vs PRO vs ENTERPRISE)
+
+```java
+// service/TieredRateLimiterService.java
+@Service
+@Slf4j
+public class TieredRateLimiterService {
+
+    private final RedisTemplate<String, String> redisTemplate;
+
+    // Tier limits
+    private static final Map<String, Integer> TIER_LIMITS = Map.of(
+        "FREE",       100,    // 100 req/min
+        "PRO",        1000,   // 1000 req/min
+        "ENTERPRISE", 10000  // 10000 req/min
+    );
+
+    public boolean isAllowed(String userId, String tier) {
+
+        int limit = TIER_LIMITS.getOrDefault(tier.toUpperCase(), 100);
+        String key = "rate:" + tier + ":" + userId;
+
+        Long count = redisTemplate.opsForValue().increment(key);
+
+        if (count == 1) {
+            redisTemplate.expire(key, Duration.ofMinutes(1));
+        }
+
+        if (count > limit) {
+            log.warn("Tier {} limit exceeded for userId={}", tier, userId);
+            return false;
+        }
+
+        return true;
+    }
+}
+```
+
+---
+
+## Monitoring Rate Limiter via Actuator
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ratelimiters, health, metrics
+  health:
+    ratelimiters:
+      enabled: true
+```
+
+```bash
+# GET /actuator/ratelimiters
+{
+  "rateLimiters": {
+    "orderService": {
+      "availablePermissions": 7,        ← tokens remaining
+      "numberOfWaitingThreads": 0,
+      "state": "ACTIVE"
+    }
+  }
+}
+
+# GET /actuator/metrics/resilience4j.ratelimiter.available.permissions
+{
+  "name": "resilience4j.ratelimiter.available.permissions",
+  "measurements": [
+    { "statistic": "VALUE", "value": 7.0 }
+  ]
+}
+```
+
+---
+
+## Interview Q&A — 4 to 5 Years Experience
+
+---
+
+### Q1. What is rate limiting and why do we need it in microservices?
+
+**Answer:**
+Rate limiting controls how many requests a client can make in a time window. In microservices we need it because:
+
+- Prevents **DoS / DDoS** — bad actors flooding one service
+- Prevents **cascade failures** — one service overwhelming another
+- Enforces **fair usage** — one greedy client can't starve others
+- Protects **downstream** — DB, external APIs have their own limits
+- Enables **tiered pricing** — free vs paid plans get different limits
+
+---
+
+### Q2. Explain Token Bucket algorithm. How is it different from Fixed Window?
+
+**Answer:**
+
+Token Bucket maintains a bucket of tokens. Each request consumes one token. Tokens refill at a fixed rate. If bucket is empty, request is rejected.
+
+```
+Key difference:
+Fixed Window  → hard reset every N seconds (boundary burst problem)
+Token Bucket  → smooth refill, allows controlled bursting up to bucket size
+
+Fixed Window with limit=10/min:
+  59 requests at t=59s → allowed (window 1)
+  10 requests at t=61s → allowed (window 2)
+  → 69 requests in 2 seconds at boundary ← burst problem
+
+Token Bucket with capacity=10, refill=10/min:
+  10 requests → bucket empty → next request waits for refill
+  → no boundary burst ✅
+```
+
+---
+
+### Q3. What is the difference between Rate Limiting, Circuit Breaker, and Bulkhead?
+
+**Answer:**
+
+```
+Rate Limiter  → controls INCOMING request volume
+               "You can only send 100 req/min"
+               Protects: your service from overload
+
+Circuit Breaker → controls OUTGOING calls to failing service
+                  "Stop calling — they keep failing"
+                  Protects: your service from slow/failing downstream
+
+Bulkhead      → limits CONCURRENT threads/connections
+                "Only 10 threads can call this service at once"
+                Protects: one dependency failure from consuming all threads
+```
+
+---
+
+### Q4. Where should rate limiting be applied — API Gateway or Microservice?
+
+**Answer:**
+
+Both, for different reasons:
+
+```
+API Gateway (Kong / AWS API GW):
+  → Global entry point — first line of defense
+  → Reject before requests even reach microservices
+  → Per API key, per IP, per route
+  → Reduces load on all downstream services
+
+Microservice level (Resilience4j):
+  → Service-specific business rules
+  → Per user tier (FREE/PRO/ENTERPRISE)
+  → Protects internal services from each other
+  → Works even without API gateway
+
+Best practice → BOTH:
+  Gateway:     coarse global limit (1000 req/min per IP)
+  Microservice: fine business limit (10 orders/min per user)
+```
+
+---
+
+### Q5. How do you implement distributed rate limiting across multiple instances?
+
+**Answer:**
+
+Local rate limiters (Resilience4j alone) don't work in distributed systems — each instance has its own counter.
+
+```
+Instance 1: counter=90 → allows 10 more
+Instance 2: counter=90 → allows 10 more
+Instance 3: counter=90 → allows 10 more
+→ Client gets 30 more requests — 3x the limit! ❌
+```
+
+Solution — **Redis as shared counter**:
+
+```
+All instances → Redis INCR on same key → shared count ✅
+
+Instance 1: Redis INCR rate:user123 → 91
+Instance 2: Redis INCR rate:user123 → 92
+Instance 3: Redis INCR rate:user123 → 93
+→ All sharing one atomic counter ✅
+```
+
+Use Redis `INCR` + `EXPIRE` for atomic, distributed rate limiting.
+
+---
+
+### Q6. What HTTP status code does rate limiting return and what headers should you include?
+
+**Answer:**
+
+```
+Status: 429 Too Many Requests
+
+Headers:
+  X-RateLimit-Limit:     100      ← max requests allowed
+  X-RateLimit-Remaining: 0        ← requests left in window
+  X-RateLimit-Reset:     30       ← seconds until window resets
+  Retry-After:           30       ← when client should retry
+
+Body:
+{
+  "status": 429,
+  "error": "Too Many Requests",
+  "message": "Rate limit exceeded. Max 100 requests per minute.",
+  "retryAfter": "30s"
+}
+```
+
+---
+
+### Q7. What is the sliding window algorithm and why is it better than fixed window?
+
+**Answer:**
+
+Sliding window tracks requests in a rolling window rather than fixed time buckets. Two variants:
+
+```
+Fixed Window:   |-- 0-60s --|-- 60-120s --|
+                Counter resets at 60s boundary
+                Problem: 2x burst at boundary
+
+Sliding Window Log:
+                Keeps timestamp of every request
+                On each request: remove timestamps > 60s old
+                Count remaining → compare to limit
+                Accurate but high memory
+
+Sliding Window Counter:
+                Hybrid: 2 counters + weighted calculation
+                rate = (prev_count × overlap%) + current_count
+                Low memory + no boundary burst
+                Slight approximation but acceptable for most cases
+```
+
+---
+
+### Q8. How do you handle rate limiting for different user tiers?
+
+**Answer:**
+
+Use per-user Redis keys with tier-specific limits:
+
+```java
+// Different limits per tier
+Map<String, Integer> LIMITS = Map.of(
+    "FREE",       100,    // per minute
+    "PRO",        1000,
+    "ENTERPRISE", 10000
+);
+
+// Key includes tier and userId
+String key = "rate:" + tier + ":" + userId;
+// rate:FREE:user123
+// rate:PRO:user456
+```
+
+Extract user tier from JWT claims or API key metadata. Reject with 429 + message telling user to upgrade tier if on FREE plan.
+
+---
+
+### Q9. What happens when Redis goes down in your distributed rate limiter?
+
+**Answer:**
+
+Two strategies:
+
+```
+1. Fail Open (recommended for most APIs):
+   If Redis is down → allow the request
+   Reason: Availability > strict rate limiting
+   Risk: temporary abuse during outage
+
+2. Fail Closed:
+   If Redis is down → reject all requests (503)
+   Reason: Safety critical systems
+   Risk: full service unavailability during Redis outage
+
+Implementation:
+try {
+    Long count = redisTemplate.opsForValue().increment(key);
+    return count <= limit;
+} catch (RedisException ex) {
+    log.error("Redis down — failing open");
+    return true;   // fail open
+}
+
+Also: use Redis Sentinel / Cluster for HA
+      local fallback counter as secondary defense
+```
+
+---
+
+### Q10. How do you rate limit outbound calls — like calls to a third-party API?
+
+**Answer:**
+
+Third-party APIs (payment gateways, SMS providers) often have their own limits. If you exceed them — they return 429 and may suspend your account.
+
+```java
+// Outbound rate limiting — same Resilience4j, different direction
+@RateLimiter(name = "smsProvider", fallbackMethod = "smsFallback")
+public void sendSms(String phone, String message) {
+    smsClient.send(phone, message);   // outbound call to Twilio etc.
+}
+
+// yml
+resilience4j:
+  ratelimiter:
+    instances:
+      smsProvider:
+        limit-for-period: 10      # Twilio allows 10/sec on our plan
+        limit-refresh-period: 1s
+        timeout-duration: 500ms   # wait a bit before rejecting
+```
+
+Queue rejected outbound calls in Kafka/RabbitMQ for retry instead of dropping them.
+
+---
+
+## Quick Reference Cheat Sheet
+
+```
+ALGORITHMS
+  Fixed Window     → simple, boundary burst problem
+  Sliding Log      → accurate, high memory
+  Sliding Counter  → accurate + low memory (hybrid) ← best balance
+  Token Bucket     → burst-friendly, smooth ← most used
+  Leaky Bucket     → smooth output, no burst
+
+RESILIENCE4J CONFIG
+  limit-for-period:    N    → tokens per window
+  limit-refresh-period: 1s  → window size
+  timeout-duration:    0s   → wait time (0 = reject immediately)
+
+REDIS PATTERN
+  INCR key             → atomic increment
+  EXPIRE key 60        → set window TTL
+  key = rate:userId    → per user counter
+
+RESPONSE
+  Status: 429
+  Headers: X-RateLimit-Limit / Remaining / Reset + Retry-After
+
+DISTRIBUTED
+  Local CB  → per instance ❌
+  Redis     → shared counter across all instances ✅
+
+LAYERS
+  API Gateway   → global coarse limit (first defense)
+  Microservice  → fine business rules (second defense)
+  Redis Filter  → per user / per IP (distributed)
+```
+
+Want me to now cover **Bulkhead pattern** — thread pool isolation and semaphore isolation — which is the natural next topic alongside rate limiting and circuit breaker?
+    
+# Rate Limiter + Circuit Breaker + Retry — Combined Implementation
+
+---
+
+## Theory First — How They Work Together
+
+### Each One's Job
+
+```
+Rate Limiter    → "How MANY requests per second?"
+                  Guards the ENTRY — controls volume
+
+Circuit Breaker → "Is the DOWNSTREAM healthy?"
+                  Guards the EXIT — stops calling failing services
+
+Retry           → "Should we TRY AGAIN on failure?"
+                  Handles TRANSIENT failures — temporary blips
+```
+
+---
+
+### The Execution Order — Most Important Concept
+
+This is the **most asked interview question** on this topic:
+
+```
+Incoming Request
+      │
+      ▼
+┌─────────────────┐
+│   Rate Limiter  │  ← checks first — "are you allowed in?"
+└────────┬────────┘
+         │ allowed
+         ▼
+┌─────────────────┐
+│ Circuit Breaker │  ← checks second — "is downstream healthy?"
+└────────┬────────┘
+         │ closed (healthy)
+         ▼
+┌─────────────────┐
+│     Retry       │  ← wraps the actual call — retries on failure
+└────────┬────────┘
+         │
+         ▼
+   Actual Method / Downstream Call
+         │
+         ├── SUCCESS → return result
+         └── FAILURE → Retry tries again
+                     → CB records failure
+                     → if CB trips → fallback
+```
+
+> **Order Rule:**
+> `@RateLimiter` → `@CircuitBreaker` → `@Retry` → method
+
+---
+
+### Why This Order?
+
+```
+Why RateLimiter FIRST?
+  → Reject excess traffic BEFORE it even hits CB or Retry
+  → No point checking CB health if request shouldn't be allowed at all
+  → Saves CB slots for legitimate requests
+
+Why CircuitBreaker BEFORE Retry?
+  → If CB is OPEN → don't even attempt retry (downstream is DOWN)
+  → Retry only makes sense when CB is CLOSED (downstream might be up)
+  → CB needs to see failures AFTER retries are exhausted
+    (don't trip CB on first failure if retry will fix it)
+
+Why Retry INNERMOST?
+  → Retry wraps the actual call directly
+  → Each retry attempt is recorded by CB
+  → CB sees: attempt1=fail, attempt2=fail, attempt3=fail
+    → 3 failures recorded → CB closer to tripping
+```
+
+---
+
+### The Decorator Stack Internally
+
+```
+Resilience4j decorates like nested functions:
+
+rateLimiter(
+  circuitBreaker(
+    retry(
+      actualMethod()       ← innermost
+    )
+  )
+)
+
+Execution flow:
+1. rateLimiter.acquirePermission()   → check token
+2. circuitBreaker.allowRequest()     → check state
+3. retry.executeSupplier()           → attempt 1
+4. actualMethod() → FAIL
+5. retry.executeSupplier()           → attempt 2
+6. actualMethod() → FAIL
+7. retry.executeSupplier()           → attempt 3
+8. actualMethod() → FAIL
+9. retry exhausted → exception bubbles up
+10. circuitBreaker.onError()         → records 3 failures
+11. if CB threshold hit → OPEN
+12. fallback() called
+```
+
+---
+
+### What Each One Does on Failure
+
+```
+Scenario: Payment service is flaky
+
+Request arrives:
+  RateLimiter  → token available → ALLOW
+  CircuitBreaker → CLOSED → ALLOW
+  Retry attempt 1 → payment service → TIMEOUT
+  Retry attempt 2 → payment service → TIMEOUT
+  Retry attempt 3 → payment service → TIMEOUT
+  Retry exhausted → throw exception
+  CircuitBreaker records 3 failures
+  (after enough failures) CB → OPEN
+
+Next request arrives:
+  RateLimiter  → token available → ALLOW
+  CircuitBreaker → OPEN → REJECT immediately (no retry attempted)
+  Fallback called → return cached/default response
+
+After wait-duration:
+  CB → HALF_OPEN
+  Next request → allowed through → retry if needed → if success → CB CLOSED
+```
+
+---
+
+## Coding — Only the Changes Needed
+
+---
+
+### Change 1 — `application.yml`
+
+Add all three configurations:
+
+```yaml
+resilience4j:
+
+  # ── Rate Limiter ──
+  ratelimiter:
+    instances:
+      paymentService:
+        limit-for-period: 10           # 10 requests
+        limit-refresh-period: 1s       # per second
+        timeout-duration: 0s           # reject immediately if no token
+
+  # ── Circuit Breaker ──
+  circuitbreaker:
+    instances:
+      paymentService:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        failure-rate-threshold: 50     # trip if 50%+ calls fail
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: 10s
+        permitted-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exceptions:
+          - java.lang.Exception
+
+  # ── Retry ──
+  retry:
+    instances:
+      paymentService:
+        max-attempts: 3                # try 3 times total
+        wait-duration: 500ms           # wait 500ms between retries
+        retry-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+        ignore-exceptions:
+          - com.myapp.exception.BusinessException  # don't retry business errors
+```
+
+> **Key:** All three use the **same instance name** `paymentService` — that's how they stack on the same method.
+
+---
+
+### Change 2 — Service Layer (Stacked Annotations)
+
+Only the method signature changes — add all three annotations:
+
+```java
+// service/PaymentService.java
+@Service
+@Slf4j
+public class PaymentService {
+
+    private final PaymentGatewayClient gatewayClient;
+
+    public PaymentService(PaymentGatewayClient gatewayClient) {
+        this.gatewayClient = gatewayClient;
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Stack all three — ORDER IS CRITICAL
+    // RateLimiter → CircuitBreaker → Retry → method
+    // ─────────────────────────────────────────────────────
+    @RateLimiter(name = "paymentService",    fallbackMethod = "paymentFallback")
+    @CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+    @Retry(name = "paymentService",          fallbackMethod = "paymentFallback")
+    public PaymentResponse processPayment(PaymentRequest request) {
+        log.info("Processing payment for orderId={}", request.getOrderId());
+        return gatewayClient.process(request);   // actual downstream call
+    }
+
+    // ─────────────────────────────────────────────────────
+    // Single fallback handles ALL three annotation failures
+    // Must have same return type + Throwable as last param
+    // ─────────────────────────────────────────────────────
+    public PaymentResponse paymentFallback(PaymentRequest request, Throwable ex) {
+
+        // Log WHICH component triggered the fallback
+        if (ex instanceof RequestNotPermitted) {
+            log.warn("RATE LIMIT triggered for orderId={}", request.getOrderId());
+        } else if (ex instanceof CallNotPermittedException) {
+            log.warn("CIRCUIT BREAKER open for orderId={}", request.getOrderId());
+        } else if (ex instanceof MaxRetriesExceededException) {
+            log.warn("RETRY exhausted for orderId={}", request.getOrderId());
+        } else {
+            log.error("Payment failed for orderId={}: {}", request.getOrderId(), ex.getMessage());
+        }
+
+        return PaymentResponse.builder()
+                .orderId(request.getOrderId())
+                .status("PENDING")
+                .message("Payment queued — will retry automatically")
+                .build();
+    }
+}
+```
+
+---
+
+### Change 3 — Separate Fallbacks Per Annotation (Optional but Cleaner)
+
+If you want **different fallback behavior** per component:
+
+```java
+@RateLimiter(name = "paymentService",    fallbackMethod = "rateLimitFallback")
+@CircuitBreaker(name = "paymentService", fallbackMethod = "circuitBreakerFallback")
+@Retry(name = "paymentService",          fallbackMethod = "retryFallback")
+public PaymentResponse processPayment(PaymentRequest request) {
+    return gatewayClient.process(request);
+}
+
+// Rate limiter fallback — too many requests
+public PaymentResponse rateLimitFallback(PaymentRequest request,
+                                          RequestNotPermitted ex) {
+    log.warn("Rate limit hit — orderId={}", request.getOrderId());
+    return PaymentResponse.builder()
+            .orderId(request.getOrderId())
+            .status("RATE_LIMITED")
+            .message("Too many requests. Retry after 1 second.")
+            .build();
+}
+
+// Circuit breaker fallback — downstream is DOWN
+public PaymentResponse circuitBreakerFallback(PaymentRequest request,
+                                               CallNotPermittedException ex) {
+    log.warn("Circuit OPEN — payment service down, orderId={}", request.getOrderId());
+    return PaymentResponse.builder()
+            .orderId(request.getOrderId())
+            .status("SERVICE_DOWN")
+            .message("Payment service unavailable. Queued for processing.")
+            .build();
+}
+
+// Retry fallback — all retries exhausted
+public PaymentResponse retryFallback(PaymentRequest request, Exception ex) {
+    log.error("All retries failed — orderId={}", request.getOrderId());
+    return PaymentResponse.builder()
+            .orderId(request.getOrderId())
+            .status("FAILED")
+            .message("Payment failed after 3 attempts. Please try again.")
+            .build();
+}
+```
+
+---
+
+### Change 4 — Async Version (with `@TimeLimiter`)
+
+For async calls — add `@TimeLimiter` to enforce per-call timeout:
+
+```yaml
+# Add to application.yml
+resilience4j:
+  timelimiter:
+    instances:
+      paymentService:
+        timeout-duration: 2s           # each attempt must complete in 2s
+        cancel-running-future: true    # cancel future if timeout
+```
+
+```java
+// Method must return CompletableFuture for TimeLimiter to work
+@RateLimiter(name = "paymentService",    fallbackMethod = "asyncFallback")
+@CircuitBreaker(name = "paymentService", fallbackMethod = "asyncFallback")
+@Retry(name = "paymentService",          fallbackMethod = "asyncFallback")
+@TimeLimiter(name = "paymentService")    // ← add timeout per attempt
+public CompletableFuture<PaymentResponse> processPaymentAsync(PaymentRequest request) {
+    return CompletableFuture.supplyAsync(() -> {
+        log.info("Async payment for orderId={}", request.getOrderId());
+        return gatewayClient.process(request);
+    });
+}
+
+// Fallback must also return CompletableFuture
+public CompletableFuture<PaymentResponse> asyncFallback(PaymentRequest request,
+                                                         Throwable ex) {
+    log.warn("Async fallback triggered: {}", ex.getMessage());
+    return CompletableFuture.completedFuture(
+        PaymentResponse.builder()
+            .orderId(request.getOrderId())
+            .status("PENDING")
+            .build()
+    );
+}
+```
+
+---
+
+### Change 5 — Exception Handler Updates
+
+```java
+// Add to GlobalExceptionHandler.java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    // Rate Limiter — 429
+    @ExceptionHandler(RequestNotPermitted.class)
+    public ResponseEntity<ErrorResponse> handleRateLimit(RequestNotPermitted ex) {
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", "1")
+                .body(ErrorResponse.builder()
+                        .status(429)
+                        .error("Too Many Requests")
+                        .message("Rate limit exceeded")
+                        .build());
+    }
+
+    // Circuit Breaker — 503
+    @ExceptionHandler(CallNotPermittedException.class)
+    public ResponseEntity<ErrorResponse> handleCircuitBreaker(CallNotPermittedException ex) {
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ErrorResponse.builder()
+                        .status(503)
+                        .error("Service Unavailable")
+                        .message("Service is temporarily unavailable")
+                        .build());
+    }
+
+    // Retry exhausted — 502
+    @ExceptionHandler(MaxRetriesExceededException.class)
+    public ResponseEntity<ErrorResponse> handleMaxRetries(MaxRetriesExceededException ex) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_GATEWAY)
+                .body(ErrorResponse.builder()
+                        .status(502)
+                        .error("Bad Gateway")
+                        .message("Service failed after multiple retries")
+                        .build());
+    }
+}
+```
+
+---
+
+## How All Three Interact — Scenario Walkthrough
+
+```
+Config:
+  RateLimiter  → 10 req/sec
+  CircuitBreaker → trip at 50% failure (min 5 calls)
+  Retry        → 3 attempts, 500ms apart
+
+─────────────────────────────────────────────────────
+SCENARIO 1: Normal traffic, payment gateway healthy
+─────────────────────────────────────────────────────
+req1 → RL: token ✅ → CB: CLOSED ✅ → attempt1 → SUCCESS
+req2 → RL: token ✅ → CB: CLOSED ✅ → attempt1 → SUCCESS
+→ Everything works normally
+
+
+─────────────────────────────────────────────────────
+SCENARIO 2: Payment gateway starts timing out
+─────────────────────────────────────────────────────
+req3 → RL: ✅ → CB: CLOSED ✅
+       → attempt1: TIMEOUT
+       → attempt2: TIMEOUT (after 500ms)
+       → attempt3: TIMEOUT (after 500ms)
+       → retry exhausted → CB records 3 failures
+       → fallback: "PENDING"
+
+req4 → same → CB records 3 more failures (6 total)
+       → CB threshold hit (50%) → CB OPEN
+
+req5 → RL: ✅ → CB: OPEN ❌
+       → fallback immediately, no retry attempted
+       → "Service unavailable"
+
+
+─────────────────────────────────────────────────────
+SCENARIO 3: Too many requests coming in
+─────────────────────────────────────────────────────
+req1-10  → RL: tokens available ✅ → normal flow
+req11    → RL: no tokens ❌
+           → fallback immediately
+           → CB and Retry not even involved
+           → "Too many requests"
+
+
+─────────────────────────────────────────────────────
+SCENARIO 4: Gateway recovers — CB moves to HALF_OPEN
+─────────────────────────────────────────────────────
+(after 10s wait-duration)
+req12 → RL: ✅ → CB: HALF_OPEN, allows test request ✅
+        → attempt1 → SUCCESS
+        → CB records success (1/3 needed)
+req13 → attempt1 → SUCCESS (2/3)
+req14 → attempt1 → SUCCESS (3/3)
+        → CB: CLOSED ✅ — fully recovered
+```
+
+---
+
+## Key Rules — Quick Reference
+
+```
+STACKING ORDER (top to bottom in code):
+  @RateLimiter      ← outermost, checked first
+  @CircuitBreaker   ← middle
+  @Retry            ← innermost, wraps actual call
+  @TimeLimiter      ← only for async (CompletableFuture)
+
+SAME INSTANCE NAME:
+  All three must use same name → same yml config block
+
+FALLBACK SIGNATURE:
+  Same return type as method
+  Same parameters as method
+  + Throwable as LAST parameter
+
+WHAT EACH EXCEPTION MEANS:
+  RequestNotPermitted      → Rate Limiter blocked
+  CallNotPermittedException → Circuit Breaker OPEN
+  MaxRetriesExceededException → Retry exhausted
+
+HTTP STATUS PER COMPONENT:
+  Rate Limiter    → 429 Too Many Requests
+  Circuit Breaker → 503 Service Unavailable
+  Retry exhausted → 502 Bad Gateway
+
+RETRY + CB INTERACTION:
+  Each retry attempt = one CB failure record
+  3 retries × 10 requests = 30 CB failure records
+  → CB trips faster under sustained failure
+  → This is intentional — sustained failure = trip fast
+```
+
+---
+
+## Summary — One Line Each
+
+```
+Theory:
+  RateLimiter  → controls how many can enter
+  CircuitBreaker → controls whether downstream is called
+  Retry        → controls how many times to try
+
+Order:
+  RL → CB → Retry → method (outer to inner)
+
+In code:
+  @RateLimiter on top, @Retry at bottom, same name in yml
+
+On failure:
+  RL blocks  → no CB or Retry involved
+  CB open    → no Retry attempted
+  Retry fails → CB records each failure → may trip CB
+```
+
+Want me to now show **Bulkhead** added to this same stack — making it the **full Resilience4j suite** of 4 patterns together?
+
+# Bulkhead Pattern — Theory + Integration with Full Resilience4j Suite
+
+---
+
+## What is Bulkhead?
+
+The name comes from **ship architecture**:
+
+```
+A ship is divided into watertight compartments (bulkheads).
+If one compartment floods → only THAT compartment fills with water.
+The rest of the ship stays afloat.
+
+Without bulkheads:          With bulkheads:
+One hole → entire ship      One hole → one compartment
+sinks ❌                    Rest of ship safe ✅
+```
+
+In microservices:
+
+```
+Without Bulkhead:
+  Payment Service is slow
+  → all 200 threads waiting on Payment
+  → Order Service has NO threads left
+  → Order Service also becomes unresponsive
+  → entire system down ❌
+
+With Bulkhead:
+  Payment Service gets max 20 threads
+  → Payment is slow → 20 threads busy
+  → Order Service still has 180 threads
+  → Order Service works fine ✅
+```
+
+> **Bulkhead isolates failures** — stops one slow/failing dependency from consuming ALL resources and taking down the entire service.
+
+---
+
+## Two Types of Bulkhead
+
+```
+Bulkhead Types
+│
+├── 1. ThreadPool Bulkhead   ← separate thread pool per dependency
+│                              request runs in its OWN pool
+│                              caller thread freed immediately
+│
+└── 2. Semaphore Bulkhead   ← limits concurrent calls using semaphore
+                               caller thread HOLDS during execution
+                               simpler, no extra threads
+```
+
+---
+
+## Type 1 — ThreadPool Bulkhead
+
+Each downstream service gets its **own dedicated thread pool**. Caller is freed immediately.
+
+```
+Main Thread Pool (200 threads)
+      │
+      ├── Payment ThreadPool  (max 10 threads, queue 5)
+      │     └── payment calls run here
+      │
+      ├── Shipping ThreadPool (max 5 threads, queue 2)
+      │     └── shipping calls run here
+      │
+      └── User ThreadPool     (max 8 threads, queue 3)
+            └── user calls run here
+
+If Payment pool is full (10 threads busy):
+  → new payment request → BulkheadFullException
+  → Shipping, User pools UNAFFECTED ✅
+```
+
+```
+Flow:
+Caller thread → submits task to Payment pool → immediately freed
+Payment pool thread → executes actual call
+→ Returns CompletableFuture to caller
+```
+
+---
+
+## Type 2 — Semaphore Bulkhead
+
+Limits **concurrent calls** using a counting semaphore. Caller thread holds during execution.
+
+```
+Semaphore permits = 5
+
+req1 → acquires permit → [4 remaining] → executes → releases permit
+req2 → acquires permit → [3 remaining] → executes → releases permit
+req3 → acquires permit → [2 remaining] → executes → releases permit
+req4 → acquires permit → [1 remaining] → executes → releases permit
+req5 → acquires permit → [0 remaining] → executes → releases permit
+req6 → no permits → BulkheadFullException → fallback
+```
+
+---
+
+## ThreadPool vs Semaphore — Comparison
+
+| | ThreadPool | Semaphore |
+|---|---|---|
+| **How it works** | Separate thread pool | Counting semaphore |
+| **Caller thread** | Freed immediately | Held during execution |
+| **Async support** | ✅ Natural fit | ❌ Sync only |
+| **Overhead** | Higher (thread mgmt) | Lower |
+| **Isolation level** | Strong | Moderate |
+| **Use when** | Slow I/O calls, async | Fast calls, simple limiting |
+| **Spring Boot 3** | ✅ | ✅ |
+
+---
+
+## Full Suite — All 4 Together
+
+```
+Incoming Request
+      │
+      ▼
+┌─────────────────┐
+│   Rate Limiter  │  → "How many per second?"
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│    Bulkhead     │  → "How many CONCURRENT calls?"
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Circuit Breaker │  → "Is downstream healthy?"
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│     Retry       │  → "Try again on failure?"
+└────────┬────────┘
+         │
+         ▼
+   Actual Method
+```
+
+**Order: RateLimiter → Bulkhead → CircuitBreaker → Retry → method**
+
+---
+
+## Why Bulkhead Goes Between RateLimiter and CircuitBreaker?
+
+```
+RateLimiter  → controls VOLUME  (req/sec)
+               "Don't let too many in per second"
+
+Bulkhead     → controls CONCURRENCY (simultaneous calls)
+               "Don't let too many run AT THE SAME TIME"
+               Must be BEFORE CB so pool is protected
+               even when CB allows the call
+
+CircuitBreaker → controls HEALTH of downstream
+                 Only called if RL + BH both allow
+
+Retry        → innermost — wraps actual call directly
+```
+
+---
+
+## Coding — Only Changes Needed
+
+---
+
+### Change 1 — `application.yml` (Add Bulkhead Config)
+
+```yaml
+resilience4j:
+
+  # ── Rate Limiter (unchanged) ──
+  ratelimiter:
+    instances:
+      paymentService:
+        limit-for-period: 10
+        limit-refresh-period: 1s
+        timeout-duration: 0s
+
+  # ── Bulkhead — NEW ──
+  bulkhead:
+    instances:
+      paymentService:
+        max-concurrent-calls: 5        # max 5 simultaneous calls
+        max-wait-duration: 0ms         # wait 0ms if full → reject immediately
+        # max-wait-duration: 100ms     # wait 100ms for a slot before rejecting
+
+  # ── ThreadPool Bulkhead — NEW (alternative to semaphore) ──
+  thread-pool-bulkhead:
+    instances:
+      paymentService:
+        max-thread-pool-size: 10       # max 10 threads in pool
+        core-thread-pool-size: 5       # keep 5 threads alive always
+        queue-capacity: 5              # queue up to 5 requests when pool full
+        keep-alive-duration: 20ms      # idle thread alive for 20ms
+
+  # ── Circuit Breaker (unchanged) ──
+  circuitbreaker:
+    instances:
+      paymentService:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: 10s
+        permitted-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exceptions:
+          - java.lang.Exception
+
+  # ── Retry (unchanged) ──
+  retry:
+    instances:
+      paymentService:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+        ignore-exceptions:
+          - com.myapp.exception.BusinessException
+
+  # ── TimeLimiter (for async) ──
+  timelimiter:
+    instances:
+      paymentService:
+        timeout-duration: 2s
+        cancel-running-future: true
+```
+
+---
+
+### Change 2 — Service Layer (Add `@Bulkhead` Annotation)
+
+```java
+// service/PaymentService.java
+@Service
+@Slf4j
+public class PaymentService {
+
+    private final PaymentGatewayClient gatewayClient;
+
+    public PaymentService(PaymentGatewayClient gatewayClient) {
+        this.gatewayClient = gatewayClient;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SEMAPHORE Bulkhead — sync method
+    // Full stack: RL → BH → CB → Retry → method
+    // ─────────────────────────────────────────────────────────────
+    @RateLimiter(name = "paymentService",    fallbackMethod = "paymentFallback")
+    @Bulkhead(name = "paymentService",       fallbackMethod = "paymentFallback",
+              type = Bulkhead.Type.SEMAPHORE)  // ← SEMAPHORE type
+    @CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+    @Retry(name = "paymentService",          fallbackMethod = "paymentFallback")
+    public PaymentResponse processPayment(PaymentRequest request) {
+        log.info("Processing payment for orderId={}", request.getOrderId());
+        return gatewayClient.process(request);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // THREADPOOL Bulkhead — must return CompletableFuture
+    // Full stack: RL → BH(TP) → CB → Retry → method
+    // ─────────────────────────────────────────────────────────────
+    @RateLimiter(name = "paymentService",    fallbackMethod = "asyncPaymentFallback")
+    @Bulkhead(name = "paymentService",       fallbackMethod = "asyncPaymentFallback",
+              type = Bulkhead.Type.THREADPOOL)  // ← THREADPOOL type
+    @CircuitBreaker(name = "paymentService", fallbackMethod = "asyncPaymentFallback")
+    @Retry(name = "paymentService",          fallbackMethod = "asyncPaymentFallback")
+    @TimeLimiter(name = "paymentService")
+    public CompletableFuture<PaymentResponse> processPaymentAsync(PaymentRequest request) {
+        return CompletableFuture.supplyAsync(() -> {
+            log.info("Async payment for orderId={}", request.getOrderId());
+            return gatewayClient.process(request);
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Fallback — identifies WHICH component triggered it
+    // ─────────────────────────────────────────────────────────────
+    public PaymentResponse paymentFallback(PaymentRequest request, Throwable ex) {
+
+        String reason;
+
+        if (ex instanceof RequestNotPermitted) {
+            // Rate Limiter triggered
+            reason = "RATE_LIMITED";
+            log.warn("Rate limit exceeded for orderId={}", request.getOrderId());
+
+        } else if (ex instanceof BulkheadFullException) {
+            // Bulkhead triggered — too many concurrent calls
+            reason = "BULKHEAD_FULL";
+            log.warn("Bulkhead full — too many concurrent calls for orderId={}",
+                    request.getOrderId());
+
+        } else if (ex instanceof CallNotPermittedException) {
+            // Circuit Breaker is OPEN
+            reason = "CIRCUIT_OPEN";
+            log.warn("Circuit OPEN for orderId={}", request.getOrderId());
+
+        } else if (ex instanceof MaxRetriesExceededException) {
+            // All retries exhausted
+            reason = "RETRIES_EXHAUSTED";
+            log.error("All retries failed for orderId={}", request.getOrderId());
+
+        } else {
+            reason = "UNKNOWN_ERROR";
+            log.error("Unknown error for orderId={}: {}", request.getOrderId(),
+                    ex.getMessage());
+        }
+
+        return PaymentResponse.builder()
+                .orderId(request.getOrderId())
+                .status("PENDING")
+                .reason(reason)
+                .message("Payment queued — will retry automatically")
+                .build();
+    }
+
+    // Async fallback — returns CompletableFuture
+    public CompletableFuture<PaymentResponse> asyncPaymentFallback(
+            PaymentRequest request, Throwable ex) {
+        log.warn("Async fallback triggered: {}", ex.getMessage());
+        return CompletableFuture.completedFuture(
+            PaymentResponse.builder()
+                    .orderId(request.getOrderId())
+                    .status("PENDING")
+                    .message("Queued for retry")
+                    .build()
+        );
+    }
+}
+```
+
+---
+
+### Change 3 — Exception Handler (Add `BulkheadFullException`)
+
+```java
+// Only NEW addition to GlobalExceptionHandler.java
+
+// Bulkhead Full — 503
+@ExceptionHandler(BulkheadFullException.class)
+public ResponseEntity<ErrorResponse> handleBulkhead(BulkheadFullException ex) {
+    return ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)      // 503
+            .header("Retry-After", "1")
+            .body(ErrorResponse.builder()
+                    .status(503)
+                    .error("Service Unavailable")
+                    .message("Server too busy. Please retry shortly.")
+                    .build());
+}
+```
+
+---
+
+### Change 4 — Actuator Monitoring (Add Bulkhead)
+
+```yaml
+# Only addition to application.yml management section
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, metrics, ratelimiters, circuitbreakers, bulkheads, retries
+  health:
+    bulkheads:
+      enabled: true
+```
+
+```bash
+# Monitor bulkhead state
+GET /actuator/bulkheads
+
+{
+  "bulkheads": {
+    "paymentService": {
+      "availableConcurrentCalls": 3,   ← 3 slots free (5 max, 2 in use)
+      "maxAllowedConcurrentCalls": 5
+    }
+  }
+}
+
+# Monitor all resilience metrics together
+GET /actuator/metrics/resilience4j.bulkhead.available.concurrent.calls
+GET /actuator/metrics/resilience4j.bulkhead.max.allowed.concurrent.calls
+GET /actuator/metrics/resilience4j.ratelimiter.available.permissions
+GET /actuator/metrics/resilience4j.circuitbreaker.state
+GET /actuator/metrics/resilience4j.retry.calls
+```
+
+---
+
+## Full Suite — Complete Scenario Walkthrough
+
+```
+Config:
+  RateLimiter  → 10 req/sec
+  Bulkhead     → 5 concurrent calls
+  CircuitBreaker → trip at 50% failure
+  Retry        → 3 attempts
+
+─────────────────────────────────────────────────────────
+SCENARIO 1: Burst of 15 requests at same time
+─────────────────────────────────────────────────────────
+req 1-10  → RateLimiter ✅ (10 tokens available)
+req 11-15 → RateLimiter ❌ (no tokens) → fallback "RATE_LIMITED"
+
+Of req 1-10:
+  req 1-5  → Bulkhead ✅ (5 slots available) → proceed to CB + Retry
+  req 6-10 → Bulkhead ❌ (0 slots) → fallback "BULKHEAD_FULL"
+
+Of req 1-5 (in CB + Retry):
+  CB CLOSED → Retry → actual call → SUCCESS ✅
+
+
+─────────────────────────────────────────────────────────
+SCENARIO 2: Payment gateway starts failing
+─────────────────────────────────────────────────────────
+req1 → RL ✅ → BH ✅ → CB CLOSED ✅
+       → attempt1: FAIL, attempt2: FAIL, attempt3: FAIL
+       → CB records 3 failures → fallback
+
+req2 → same → 3 more failures → CB records total 6 failures
+       (6/10 = 60% > 50% threshold)
+       → CB trips OPEN
+
+req3 → RL ✅ → BH ✅ → CB OPEN ❌
+       → no retry → fallback "CIRCUIT_OPEN"
+       → BH slot freed immediately (CB short-circuits)
+
+
+─────────────────────────────────────────────────────────
+SCENARIO 3: All 5 threads stuck on slow payment
+─────────────────────────────────────────────────────────
+(5 slow concurrent calls consuming all BH slots)
+req6 → RL ✅ → BH ❌ (0 slots, all 5 in use)
+       → fallback "BULKHEAD_FULL"
+       → CB never involved — Order, User services unaffected ✅
+
+
+─────────────────────────────────────────────────────────
+SCENARIO 4: Recovery — CB moves to HALF_OPEN
+─────────────────────────────────────────────────────────
+(after 10s wait)
+req → RL ✅ → BH ✅ → CB HALF_OPEN (allows test)
+    → attempt1 → SUCCESS
+    → CB records success (1/3)
+    → repeat 2 more times → CB CLOSED ✅
+```
+
+---
+
+## Full Suite — What Each One Protects
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      Your Microservice                        │
+│                                                              │
+│  Incoming ──▶ [Rate Limiter] ──▶ [Bulkhead] ──▶ [CB+Retry] ─┤──▶ Downstream
+│                    │                 │               │        │
+│                    │                 │               │        │
+│              Protects from:   Protects from:  Protects from:  │
+│              - DDoS           - Thread        - Flaky         │
+│              - Abuse            exhaustion      service       │
+│              - Overload       - Cascade        - Timeouts     │
+│                                 failures      - Transient     │
+│                                               errors          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Full Cheat Sheet — All 4 Together
+
+```
+ANNOTATION ORDER (top → bottom in code):
+  @RateLimiter      → outermost
+  @Bulkhead         → second
+  @CircuitBreaker   → third
+  @Retry            → innermost
+  @TimeLimiter      → only for async CompletableFuture
+
+BULKHEAD TYPES:
+  SEMAPHORE   → sync, simple, no extra threads
+  THREADPOOL  → async, strong isolation, CompletableFuture required
+
+EXCEPTION → HTTP STATUS:
+  RequestNotPermitted      (RL)  → 429 Too Many Requests
+  BulkheadFullException    (BH)  → 503 Service Unavailable
+  CallNotPermittedException (CB) → 503 Service Unavailable
+  MaxRetriesExceededException(R) → 502 Bad Gateway
+
+KEY CONFIGS:
+  RL:  limit-for-period + limit-refresh-period
+  BH:  max-concurrent-calls + max-wait-duration (semaphore)
+       max-thread-pool-size + queue-capacity (threadpool)
+  CB:  sliding-window-size + failure-rate-threshold
+  R:   max-attempts + wait-duration
+
+ALL USE SAME INSTANCE NAME:
+  name = "paymentService" across all 4 annotations + yml
+
+WHAT EACH GUARDS:
+  RL  → volume     (req/sec)
+  BH  → concurrency (simultaneous calls)
+  CB  → health     (downstream state)
+  R   → transient  (temporary blips)
+```
+
+This is the **complete Resilience4j suite** — Rate Limiter + Bulkhead + Circuit Breaker + Retry — all four working together as a production-grade resilience layer. Want me to now show how to monitor all four together on a **Grafana dashboard via Prometheus**?
+</script>
+
+<br>
+<a href="../../index.html">⬅ Back</a>
+
+<!-- Scripts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+
+<script>
+mermaid.initialize({ startOnLoad: true });
+
+// 1. Get markdown SAFELY
+const rawMarkdown = document.getElementById("markdown").textContent;
+
+const contentDiv = document.getElementById("content");
+
+// 2. Convert markdown → HTML
+contentDiv.innerHTML = marked.parse(rawMarkdown);
+
+// 3. Highlight code
+Prism.highlightAll();
+
+// 4. Mermaid render
+mermaid.initialize({ startOnLoad: true });
+
+// 5. TOC generation
+const toc = document.getElementById("toc");
+const headings = document.querySelectorAll("#content h1, #content h2, #content h3");
+
+let tocHTML = `<h2>Contents</h2><ul>`;
+
+headings.forEach(h => {
+    const id = h.innerText.replace(/\s+/g, "-").toLowerCase();
+    h.id = id;
+    tocHTML += `<li><a href="#${id}">${h.innerText}</a></li>`;
+});
+
+tocHTML += `</ul>`;
+toc.innerHTML = tocHTML;
+
+</script>
+
+</body>
+</html>
